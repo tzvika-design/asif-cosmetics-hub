@@ -1008,4 +1008,161 @@ router.post('/sync/trigger', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/shopify/debug/query-test
+ * Test different GraphQL query formats to find what works
+ */
+router.get('/debug/query-test', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ error: 'Shopify credentials not configured' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const graphqlUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}/graphql.json`;
+  const headers = {
+    'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+    'Content-Type': 'application/json'
+  };
+
+  const results = {
+    store: process.env.SHOPIFY_STORE_URL,
+    tests: {}
+  };
+
+  // Test 1: No filter at all
+  try {
+    const query1 = `
+      query {
+        orders(first: 5, sortKey: CREATED_AT, reverse: true) {
+          nodes { name createdAt totalPriceSet { shopMoney { amount } } }
+        }
+      }
+    `;
+    console.log('[DEBUG] Test 1: No filter');
+    const response1 = await axios.post(graphqlUrl, { query: query1 }, { headers });
+    results.tests.noFilter = {
+      success: !response1.data.errors,
+      count: response1.data.data?.orders?.nodes?.length || 0,
+      orders: response1.data.data?.orders?.nodes?.map(o => ({ name: o.name, date: o.createdAt, total: o.totalPriceSet?.shopMoney?.amount })),
+      errors: response1.data.errors
+    };
+  } catch (e) {
+    results.tests.noFilter = { success: false, error: e.message };
+  }
+
+  // Test 2: With date filter - format 1
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const queryStr = `created_at:>=${monthAgo} created_at:<=${today}`;
+
+    const query2 = `
+      query {
+        orders(first: 5, sortKey: CREATED_AT, reverse: true, query: "${queryStr}") {
+          nodes { name createdAt totalPriceSet { shopMoney { amount } } }
+        }
+      }
+    `;
+    console.log(`[DEBUG] Test 2: Date filter format 1: ${queryStr}`);
+    const response2 = await axios.post(graphqlUrl, { query: query2 }, { headers });
+    results.tests.dateFormat1 = {
+      query: queryStr,
+      success: !response2.data.errors,
+      count: response2.data.data?.orders?.nodes?.length || 0,
+      orders: response2.data.data?.orders?.nodes?.map(o => ({ name: o.name, date: o.createdAt, total: o.totalPriceSet?.shopMoney?.amount })),
+      errors: response2.data.errors
+    };
+  } catch (e) {
+    results.tests.dateFormat1 = { success: false, error: e.message };
+  }
+
+  // Test 3: With date filter - format 2 (using variables)
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const queryStr = `created_at:>=${monthAgo}`;
+
+    const query3 = `
+      query getOrders($query: String) {
+        orders(first: 5, sortKey: CREATED_AT, reverse: true, query: $query) {
+          nodes { name createdAt totalPriceSet { shopMoney { amount } } }
+        }
+      }
+    `;
+    console.log(`[DEBUG] Test 3: Date filter via variable: ${queryStr}`);
+    const response3 = await axios.post(graphqlUrl, {
+      query: query3,
+      variables: { query: queryStr }
+    }, { headers });
+    results.tests.dateFormat2_variable = {
+      query: queryStr,
+      success: !response3.data.errors,
+      count: response3.data.data?.orders?.nodes?.length || 0,
+      orders: response3.data.data?.orders?.nodes?.map(o => ({ name: o.name, date: o.createdAt, total: o.totalPriceSet?.shopMoney?.amount })),
+      errors: response3.data.errors
+    };
+  } catch (e) {
+    results.tests.dateFormat2_variable = { success: false, error: e.message };
+  }
+
+  // Test 4: Just >= filter (simpler)
+  try {
+    const weekAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString().split('T')[0];
+    const queryStr = `created_at:>=${weekAgo}`;
+
+    const query4 = `
+      query getOrders($query: String) {
+        orders(first: 10, sortKey: CREATED_AT, reverse: true, query: $query) {
+          nodes { name createdAt totalPriceSet { shopMoney { amount } } }
+        }
+      }
+    `;
+    console.log(`[DEBUG] Test 4: Simple >= filter: ${queryStr}`);
+    const response4 = await axios.post(graphqlUrl, {
+      query: query4,
+      variables: { query: queryStr }
+    }, { headers });
+    results.tests.simpleGte = {
+      query: queryStr,
+      success: !response4.data.errors,
+      count: response4.data.data?.orders?.nodes?.length || 0,
+      orders: response4.data.data?.orders?.nodes?.map(o => ({ name: o.name, date: o.createdAt, total: o.totalPriceSet?.shopMoney?.amount })),
+      errors: response4.data.errors
+    };
+  } catch (e) {
+    results.tests.simpleGte = { success: false, error: e.message };
+  }
+
+  // Test 5: status:any filter
+  try {
+    const queryStr = `status:any`;
+
+    const query5 = `
+      query getOrders($query: String) {
+        orders(first: 5, sortKey: CREATED_AT, reverse: true, query: $query) {
+          nodes { name createdAt totalPriceSet { shopMoney { amount } } }
+        }
+      }
+    `;
+    console.log(`[DEBUG] Test 5: status:any filter`);
+    const response5 = await axios.post(graphqlUrl, {
+      query: query5,
+      variables: { query: queryStr }
+    }, { headers });
+    results.tests.statusAny = {
+      query: queryStr,
+      success: !response5.data.errors,
+      count: response5.data.data?.orders?.nodes?.length || 0,
+      orders: response5.data.data?.orders?.nodes?.map(o => ({ name: o.name, date: o.createdAt, total: o.totalPriceSet?.shopMoney?.amount })),
+      errors: response5.data.errors
+    };
+  } catch (e) {
+    results.tests.statusAny = { success: false, error: e.message };
+  }
+
+  res.json(results);
+});
+
 module.exports = router;
