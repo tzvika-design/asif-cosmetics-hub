@@ -436,17 +436,18 @@ app.get('/api/shopify/compare-2025', async (req, res) => {
   }
 });
 
-// Check Jan-Feb 2025 orders
-app.get('/api/shopify/jan-feb-2025', async (req, res) => {
+// Check Matrixify orders - what dates do they have?
+app.get('/api/shopify/matrixify-check', async (req, res) => {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   if (!token) return res.json({ error: 'No token' });
 
   const allOrders = [];
   let page = 0;
-  let nextUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&financial_status=paid&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-02-28T23:59:59Z';
+  // Get first few pages of 2025 orders
+  let nextUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z';
 
   try {
-    while (nextUrl && page < 50) {
+    while (nextUrl && page < 20) {
       page++;
       const r = await axios.get(nextUrl, {
         headers: { 'X-Shopify-Access-Token': token },
@@ -464,29 +465,38 @@ app.get('/api/shopify/jan-feb-2025', async (req, res) => {
       if (nextUrl) await new Promise(r => setTimeout(r, 100));
     }
 
-    // Count by source
-    const sourceCounts = {};
-    allOrders.forEach(o => {
-      const source = o.source_name || 'unknown';
-      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+    // Get only Matrixify orders
+    const matrixifyOrders = allOrders.filter(o =>
+      (o.source_name || '').toLowerCase().includes('matrixify')
+    );
+
+    // Analyze date range of Matrixify orders
+    const dates = matrixifyOrders.map(o => new Date(o.created_at));
+    const minDate = dates.length ? new Date(Math.min(...dates)) : null;
+    const maxDate = dates.length ? new Date(Math.max(...dates)) : null;
+
+    // Count by month
+    const byMonth = {};
+    matrixifyOrders.forEach(o => {
+      const d = new Date(o.created_at);
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      byMonth[monthKey] = (byMonth[monthKey] || 0) + 1;
     });
 
-    // Non-Matrixify orders
-    const realOrders = allOrders.filter(o => !(o.source_name || '').toLowerCase().includes('matrixify'));
-
     res.json({
-      period: 'January-February 2025',
-      totalOrders: allOrders.length,
-      realOrders: realOrders.length,
-      matrixifyOrders: allOrders.length - realOrders.length,
-      bySource: sourceCounts,
-      realSales: Math.round(realOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0)),
-      sample: realOrders.slice(0, 5).map(o => ({
+      totalFetched: allOrders.length,
+      matrixifyCount: matrixifyOrders.length,
+      matrixifyDateRange: {
+        first: minDate?.toISOString(),
+        last: maxDate?.toISOString()
+      },
+      matrixifyByMonth: byMonth,
+      sample: matrixifyOrders.slice(0, 5).map(o => ({
         name: o.name,
-        date: o.created_at,
-        source: o.source_name,
+        created_at: o.created_at,
         total: o.total_price
-      }))
+      })),
+      note: 'If all Matrixify orders are from March+, the import used import date, not original WordPress date'
     });
   } catch (e) {
     res.json({ error: e.message });
