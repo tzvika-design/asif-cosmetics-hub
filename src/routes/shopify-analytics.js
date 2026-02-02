@@ -1165,4 +1165,167 @@ router.get('/debug/query-test', async (req, res) => {
   res.json(results);
 });
 
+// ==========================================
+// SIMPLE DEBUG ENDPOINTS (Browser-testable)
+// ==========================================
+
+/**
+ * GET /api/shopify/test-connection
+ * Test basic Shopify connection - returns shop name if credentials work
+ */
+router.get('/test-connection', async (req, res) => {
+  const axios = require('axios');
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    hasCredentials: {
+      SHOPIFY_STORE_URL: !!process.env.SHOPIFY_STORE_URL,
+      SHOPIFY_ACCESS_TOKEN: !!process.env.SHOPIFY_ACCESS_TOKEN
+    }
+  };
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    result.success = false;
+    result.error = 'Missing Shopify credentials';
+    return res.status(400).json(result);
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+
+  try {
+    const shopResponse = await axios.get(`${baseUrl}/shop.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+      timeout: 10000
+    });
+
+    result.success = true;
+    result.shop = {
+      name: shopResponse.data.shop?.name,
+      email: shopResponse.data.shop?.email,
+      domain: shopResponse.data.shop?.domain,
+      currency: shopResponse.data.shop?.currency,
+      timezone: shopResponse.data.shop?.iana_timezone,
+      country: shopResponse.data.shop?.country_name
+    };
+    result.apiVersion = apiVersion;
+    result.message = `Connected to ${result.shop.name}`;
+
+  } catch (error) {
+    result.success = false;
+    result.error = error.response?.data?.errors || error.message;
+    result.statusCode = error.response?.status;
+  }
+
+  res.json(result);
+});
+
+/**
+ * GET /api/shopify/orders-simple
+ * Fetch 5 most recent orders via REST API (no date filter, no cache)
+ */
+router.get('/orders-simple', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ success: false, error: 'Missing Shopify credentials' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+
+  try {
+    // Fetch 5 most recent orders with status=any
+    const ordersResponse = await axios.get(`${baseUrl}/orders.json?limit=5&status=any`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+      timeout: 15000
+    });
+
+    const orders = ordersResponse.data.orders || [];
+
+    res.json({
+      success: true,
+      message: `Found ${orders.length} orders`,
+      count: orders.length,
+      orders: orders.map(o => ({
+        id: o.id,
+        name: o.name,
+        created_at: o.created_at,
+        total_price: o.total_price,
+        currency: o.currency,
+        financial_status: o.financial_status,
+        fulfillment_status: o.fulfillment_status,
+        customer: o.customer ? {
+          name: `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() || 'Guest',
+          email: o.customer.email
+        } : { name: 'Guest', email: null },
+        line_items_count: o.line_items?.length || 0
+      }))
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.response?.data?.errors || error.message,
+      statusCode: error.response?.status
+    });
+  }
+});
+
+/**
+ * GET /api/shopify/refresh-all
+ * Clear cache and fetch fresh data from Shopify
+ */
+router.get('/refresh-all', async (req, res) => {
+  const startTime = Date.now();
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    steps: []
+  };
+
+  try {
+    // Step 1: Clear all caches
+    cache.clearPattern('shopify');
+    result.steps.push({ step: 'Clear cache', success: true, message: 'All shopify caches cleared' });
+
+    // Step 2: Re-initialize and preload stats
+    console.log('[API] /refresh-all - Starting full refresh...');
+    const preloaderStatus = await statsPreloader.refresh();
+    result.steps.push({
+      step: 'Preload stats',
+      success: preloaderStatus.isReady,
+      status: preloaderStatus
+    });
+
+    // Step 3: Get summary of what we have now
+    const monthStats = statsPreloader.getStats('month');
+    const todayStats = statsPreloader.getStats('today');
+
+    result.summary = {
+      month: monthStats ? {
+        totalSales: monthStats.totalSales,
+        orderCount: monthStats.orderCount,
+        avgOrderValue: monthStats.avgOrderValue
+      } : null,
+      today: todayStats ? {
+        totalSales: todayStats.totalSales,
+        orderCount: todayStats.orderCount
+      } : null
+    };
+
+    result.success = true;
+    result.message = `Refresh complete. Month: ₪${monthStats?.totalSales || 0}, ${monthStats?.orderCount || 0} orders`;
+    result.responseTime = Date.now() - startTime;
+
+  } catch (error) {
+    console.error('[API] /refresh-all error:', error);
+    result.success = false;
+    result.error = error.message;
+    result.responseTime = Date.now() - startTime;
+  }
+
+  res.json(result);
+});
+
 module.exports = router;
