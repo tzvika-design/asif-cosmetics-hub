@@ -1,136 +1,196 @@
-const claudeService = require('../services/claude');
+/**
+ * Inventory Agent
+ * Monitors stock levels, predicts stockouts, recommends reorders
+ */
 
-class InventoryAgent {
+const BaseAgent = require('./BaseAgent');
+const { prisma } = require('../services/database');
+
+class InventoryAgent extends BaseAgent {
   constructor() {
-    this.lowStockThreshold = 100; // ml
-    this.criticalStockThreshold = 50; // ml
+    super('InventoryAgent', `אתה מנהל מלאי לחנות קוסמטיקה בשם "אסיף קוסמטיקס".
 
-    this.systemPrompt = `You are ENIGMA Parfume's inventory management AI assistant.
+תפקידך לנתח נתוני מלאי ולזהות:
+1. מוצרים שעומדים להיגמר (פחות מ-14 יום לפי קצב מכירה נוכחי)
+2. מוצרים עם מלאי מת (לא נמכרו יותר מ-30 יום)
+3. המלצות להזמנה מחדש
+4. אזהרות על מחסור צפוי
+5. הזדמנויות לחיסול מלאי עודף
 
-Your responsibilities:
-1. Monitor stock levels of 127 raw materials
-2. Alert when materials are running low
-3. Suggest reorder quantities
-4. Track usage patterns
-5. Optimize inventory turnover
-
-Material categories:
-- Constants (4): Iso E Super, DPG, Citrofol F, Alcohol
-- Extracts (25): Premium accords and compositions
-- Essential Oils (42): Natural oils at various dilutions
-- Aromachemicals (56): Synthetic aroma compounds
-
-Key considerations:
-- Some materials have short shelf life
-- Certain materials are harder to source
-- Seasonal demand variations
-- IFRA regulation changes may affect usage`;
+תמיד הסבר את ההיגיון שלך בעברית ברורה ותמציתית.`);
   }
 
-  async checkStatus(inventory = []) {
-    const messages = [{
-      role: 'user',
-      content: `Analyze this inventory status:
-${JSON.stringify(inventory, null, 2)}
+  /**
+   * Analyze inventory data
+   */
+  async analyze() {
+    // Get product stats with sales velocity
+    const products = await prisma.productStat.findMany({
+      orderBy: { totalQuantitySold: 'desc' }
+    });
 
-Low stock threshold: ${this.lowStockThreshold}ml
-Critical stock threshold: ${this.criticalStockThreshold}ml
-
-Provide:
-1. Overall inventory health score (0-100)
-2. Materials needing immediate reorder
-3. Materials to watch
-4. Estimated days until stockout for critical items
-
-Respond in JSON format.`
-    }];
-
-    return await claudeService.chat(messages, this.systemPrompt);
-  }
-
-  async getAlerts(inventory = []) {
-    const alerts = [];
-
-    // Check each material against thresholds
-    for (const item of inventory) {
-      if (item.quantity <= this.criticalStockThreshold) {
-        alerts.push({
-          level: 'critical',
-          material: item.name,
-          quantity: item.quantity,
-          message: `CRITICAL: ${item.name} is at ${item.quantity}ml - immediate reorder required`
-        });
-      } else if (item.quantity <= this.lowStockThreshold) {
-        alerts.push({
-          level: 'warning',
-          material: item.name,
-          quantity: item.quantity,
-          message: `WARNING: ${item.name} is at ${item.quantity}ml - consider reordering`
-        });
-      }
+    if (products.length === 0) {
+      console.log('[InventoryAgent] No product data to analyze');
+      return { analysis: 'אין נתוני מלאי לניתוח', recommendations: [] };
     }
 
-    return alerts;
+    // Calculate days of inventory remaining for each product
+    const inventoryMetrics = products.map(p => {
+      const quantitySold = p.totalQuantitySold || 0;
+      const currentStock = p.currentStock || 0;
+
+      // Calculate daily sales rate (assume data is for 30 days)
+      const dailySalesRate = quantitySold / 30;
+
+      // Days until stockout
+      const daysUntilStockout = dailySalesRate > 0
+        ? Math.round(currentStock / dailySalesRate)
+        : currentStock > 0 ? 999 : 0;
+
+      return {
+        productId: p.productId,
+        title: p.title,
+        sku: p.sku,
+        currentStock,
+        quantitySold,
+        dailySalesRate: Math.round(dailySalesRate * 100) / 100,
+        daysUntilStockout,
+        status: this.getStockStatus(daysUntilStockout, currentStock, dailySalesRate)
+      };
+    });
+
+    // Identify critical items (less than 14 days of stock)
+    const criticalItems = inventoryMetrics.filter(p =>
+      p.daysUntilStockout < 14 && p.dailySalesRate > 0
+    );
+
+    // Identify dead stock (no sales in 30 days but has stock)
+    const deadStock = inventoryMetrics.filter(p =>
+      p.quantitySold === 0 && p.currentStock > 0
+    );
+
+    // Get AI analysis
+    const analysis = await this.getAIAnalysis(
+      'אילו מוצרים צריך להזמין בדחיפות? האם יש מלאי מת שצריך לחסל?',
+      {
+        totalProducts: products.length,
+        criticalItems: criticalItems.slice(0, 10),
+        deadStock: deadStock.slice(0, 10),
+        summary: {
+          criticalCount: criticalItems.length,
+          deadStockCount: deadStock.length,
+          healthyCount: inventoryMetrics.filter(p => p.status === 'healthy').length
+        }
+      }
+    );
+
+    // Log the analysis
+    await this.logAction(
+      'Analysis',
+      analysis.reasoning || 'ניתוח מלאי הושלם',
+      analysis.recommendation,
+      {
+        productsAnalyzed: products.length,
+        criticalItems: criticalItems.length,
+        deadStock: deadStock.length
+      },
+      analysis.confidence
+    );
+
+    // Alert for critical items
+    if (criticalItems.length > 0) {
+      await this.logAction(
+        'Alert',
+        `זוהו ${criticalItems.length} מוצרים קריטיים שעומדים להיגמר תוך 14 יום`,
+        'יש להזמין מלאי בדחיפות',
+        { criticalItems: criticalItems.map(p => ({ title: p.title, daysLeft: p.daysUntilStockout })) },
+        95
+      );
+    }
+
+    // Alert for dead stock
+    if (deadStock.length > 5) {
+      await this.logAction(
+        'Alert',
+        `זוהו ${deadStock.length} מוצרים ללא מכירות ב-30 יום האחרונים`,
+        'שקול מבצע חיסול או הורדה מהמדפים',
+        { deadStock: deadStock.map(p => ({ title: p.title, stock: p.currentStock })) },
+        85
+      );
+    }
+
+    return {
+      analysis: analysis.analysis,
+      recommendation: analysis.recommendation,
+      metrics: inventoryMetrics,
+      criticalItems,
+      deadStock
+    };
   }
 
-  async suggestReorder(material, currentStock, avgUsage) {
-    const messages = [{
-      role: 'user',
-      content: `Material: ${material}
-Current stock: ${currentStock}ml
-Average monthly usage: ${avgUsage}ml
-
-Suggest:
-1. Recommended reorder quantity
-2. Optimal reorder point
-3. Safety stock level
-4. Any seasonal considerations
-
-Respond in JSON format.`
-    }];
-
-    return await claudeService.chat(messages, this.systemPrompt);
+  /**
+   * Get stock status label
+   */
+  getStockStatus(daysUntilStockout, currentStock, dailySalesRate) {
+    if (currentStock === 0) return 'out_of_stock';
+    if (dailySalesRate === 0 && currentStock > 0) return 'dead_stock';
+    if (daysUntilStockout < 7) return 'critical';
+    if (daysUntilStockout < 14) return 'low';
+    if (daysUntilStockout < 30) return 'moderate';
+    return 'healthy';
   }
 
-  async analyzeUsage(usageHistory) {
-    const messages = [{
-      role: 'user',
-      content: `Analyze this material usage history:
-${JSON.stringify(usageHistory, null, 2)}
+  /**
+   * Get reorder recommendations
+   */
+  async getRecommendations() {
+    // Get products that need reordering
+    const products = await prisma.productStat.findMany({
+      where: {
+        currentStock: { gt: 0 }
+      }
+    });
 
-Provide:
-1. Usage trends
-2. Top 10 most used materials
-3. Seasonal patterns
-4. Anomalies or unusual usage
-5. Cost optimization suggestions
+    const recommendations = products.map(p => {
+      const dailySalesRate = (p.totalQuantitySold || 0) / 30;
+      const daysUntilStockout = dailySalesRate > 0
+        ? Math.round(p.currentStock / dailySalesRate)
+        : 999;
 
-Respond in JSON format.`
-    }];
+      // Calculate suggested reorder quantity (30 days supply)
+      const suggestedReorder = Math.ceil(dailySalesRate * 30);
 
-    return await claudeService.chat(messages, this.systemPrompt);
-  }
+      return {
+        title: p.title,
+        sku: p.sku,
+        currentStock: p.currentStock,
+        dailySalesRate: Math.round(dailySalesRate * 100) / 100,
+        daysUntilStockout,
+        suggestedReorder,
+        priority: daysUntilStockout < 7 ? 'urgent' : daysUntilStockout < 14 ? 'high' : 'normal'
+      };
+    })
+    .filter(p => p.daysUntilStockout < 30)
+    .sort((a, b) => a.daysUntilStockout - b.daysUntilStockout);
 
-  async forecastDemand(salesData, currentInventory) {
-    const messages = [{
-      role: 'user',
-      content: `Based on sales data:
-${JSON.stringify(salesData, null, 2)}
+    // Get dead stock for clearance
+    const deadStock = await prisma.productStat.findMany({
+      where: {
+        totalQuantitySold: 0,
+        currentStock: { gt: 0 }
+      }
+    });
 
-And current inventory:
-${JSON.stringify(currentInventory, null, 2)}
-
-Forecast:
-1. Material demand for next 30/60/90 days
-2. Potential stockouts
-3. Recommended purchase plan
-4. Budget estimate
-
-Respond in JSON format.`
-    }];
-
-    return await claudeService.chat(messages, this.systemPrompt);
+    return {
+      reorderList: recommendations.slice(0, 20),
+      deadStock: deadStock.map(p => ({
+        title: p.title,
+        sku: p.sku,
+        currentStock: p.currentStock,
+        recommendation: 'שקול מבצע חיסול'
+      }))
+    };
   }
 }
 
-module.exports = new InventoryAgent();
+module.exports = InventoryAgent;

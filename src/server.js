@@ -17,6 +17,9 @@ const metaRoutes = require('./routes/meta');
 // Import services
 const statsPreloader = require('./services/stats-preloader');
 const { cache } = require('./services/cache');
+const { connect: connectDB, disconnect: disconnectDB, healthCheck: dbHealthCheck } = require('./services/database');
+const shopifySync = require('./services/shopify-sync');
+const { runAllAgents, getAgentStatus } = require('./agents');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,13 +45,20 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../public')));
 
 // Health check endpoint (for Railway)
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const dbStatus = await dbHealthCheck();
+  const agentStatus = await getAgentStatus().catch(() => ({}));
+  const syncStatus = await shopifySync.getStatus().catch(() => ({}));
+
   res.json({
-    status: 'ok',
+    status: dbStatus.status === 'healthy' ? 'ok' : 'degraded',
     service: 'asif-cosmetics-hub',
     timestamp: new Date().toISOString(),
+    database: dbStatus,
     preloader: statsPreloader.getStatus(),
-    cache: cache.getStats()
+    cache: cache.getStats(),
+    sync: syncStatus,
+    agents: agentStatus
   });
 });
 
@@ -111,6 +121,32 @@ app.listen(PORT, async () => {
   ========================================
   `);
 
+  // Connect to PostgreSQL database
+  if (process.env.DATABASE_URL) {
+    console.log('[Server] Connecting to database...');
+    const dbConnected = await connectDB();
+    if (dbConnected) {
+      console.log('[Server] Database connected successfully');
+
+      // Start Shopify sync (every 60 minutes)
+      if (process.env.SHOPIFY_STORE_URL && process.env.SHOPIFY_ACCESS_TOKEN) {
+        shopifySync.startAutoSync(60);
+      }
+
+      // Run agents on schedule (every 60 minutes)
+      setInterval(() => {
+        runAllAgents().catch(err => {
+          console.error('[Server] Agent run failed:', err.message);
+        });
+      }, 60 * 60 * 1000);
+
+    } else {
+      console.warn('[Server] Database connection failed - running in limited mode');
+    }
+  } else {
+    console.log('[Server] DATABASE_URL not configured - skipping database');
+  }
+
   // Pre-load stats in background (don't block server start)
   if (process.env.SHOPIFY_STORE_URL && process.env.SHOPIFY_ACCESS_TOKEN) {
     console.log('[Server] Starting stats preloader...');
@@ -125,10 +161,12 @@ app.listen(PORT, async () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('[Server] SIGTERM received, shutting down...');
   statsPreloader.stopAutoRefresh();
+  shopifySync.stopAutoSync();
   cache.destroy();
+  await disconnectDB();
   process.exit(0);
 });
 
