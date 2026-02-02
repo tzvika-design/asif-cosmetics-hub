@@ -156,25 +156,47 @@ router.get('/analytics/summary', async (req, res) => {
     const { startDate, endDate, period } = req.query;
     const { start, end } = getDateRange(startDate, endDate, period || 'month');
 
-    console.log(`[Analytics Summary] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
+    // Log exact dates being used
+    console.log(`[Analytics Summary] ========================================`);
+    console.log(`[Analytics Summary] Period: "${period}"`);
+    console.log(`[Analytics Summary] Date Range: ${formatDateIL(start)} to ${formatDateIL(end)}`);
+    console.log(`[Analytics Summary] ISO Range: ${start.toISOString()} to ${end.toISOString()}`);
 
-    // No caching for period-specific requests - always fetch fresh data
-    // Fetch orders with date filtering at API level
+    // Fetch ALL orders with pagination (no limit - service handles it)
     const orders = await shopifyService.getOrders({
       status: 'any',
-      limit: 250,
       created_at_min: start.toISOString(),
       created_at_max: end.toISOString()
     });
 
-    const customers = await shopifyService.getCustomers({ limit: 250 });
+    // Fetch ALL customers with pagination
+    const customers = await shopifyService.getCustomers({});
 
-    console.log(`[Analytics Summary] Fetched ${orders.length} orders for period ${period}`);
+    console.log(`[Analytics Summary] Orders fetched: ${orders.length}`);
+    console.log(`[Analytics Summary] Customers fetched: ${customers.length}`);
 
-    // Calculate metrics from orders (already filtered by API)
-    const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    // Calculate metrics - using total_price (amount paid after discounts)
+    // Shopify fields:
+    // - total_price = final amount paid by customer (after discounts, includes tax/shipping)
+    // - subtotal_price = sum of line items before tax/shipping/discounts
+    // - total_discounts = total discount amount applied
+    const totalSalesGross = orders.reduce((sum, o) => {
+      // Gross = subtotal + discounts (what it would have been without discounts)
+      const subtotal = parseFloat(o.subtotal_price || 0);
+      const discounts = parseFloat(o.total_discounts || 0);
+      return sum + subtotal + discounts;
+    }, 0);
+
+    const totalSalesNet = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const totalDiscounts = orders.reduce((sum, o) => sum + parseFloat(o.total_discounts || 0), 0);
+
     const orderCount = orders.length;
-    const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
+    const avgOrderValue = orderCount > 0 ? totalSalesNet / orderCount : 0;
+
+    console.log(`[Analytics Summary] Sales Gross (before discounts): ₪${totalSalesGross.toFixed(2)}`);
+    console.log(`[Analytics Summary] Sales Net (after discounts): ₪${totalSalesNet.toFixed(2)}`);
+    console.log(`[Analytics Summary] Total Discounts: ₪${totalDiscounts.toFixed(2)}`);
+    console.log(`[Analytics Summary] Order Count: ${orderCount}`);
 
     // Returning customers calculation
     const customerOrderCounts = {};
@@ -183,9 +205,12 @@ router.get('/analytics/summary', async (req, res) => {
         customerOrderCounts[o.customer.id] = (customerOrderCounts[o.customer.id] || 0) + 1;
       }
     });
-    const totalCustomers = Object.keys(customerOrderCounts).length;
+    const uniqueCustomersInPeriod = Object.keys(customerOrderCounts).length;
     const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
-    const returningRate = totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0;
+    const returningRate = uniqueCustomersInPeriod > 0 ? Math.round((returningCustomers / uniqueCustomersInPeriod) * 100) : 0;
+
+    console.log(`[Analytics Summary] Unique customers in period: ${uniqueCustomersInPeriod}`);
+    console.log(`[Analytics Summary] ========================================`);
 
     // Today's specific stats
     const today = new Date();
@@ -196,13 +221,19 @@ router.get('/analytics/summary', async (req, res) => {
     const result = {
       success: true,
       data: {
-        totalSales,
+        // Use NET sales (after discounts) as main value - this matches Shopify's "Total sales"
+        totalSales: totalSalesNet,
+        totalSalesGross: totalSalesGross, // Before discounts
+        totalSalesNet: totalSalesNet,     // After discounts (same as totalSales)
+        totalDiscounts: totalDiscounts,
         orderCount,
         avgOrderValue,
         returningRate,
         todaySales,
         todayOrders: todayOrders.length,
-        totalCustomers: customers.length,
+        // Use unique customers WHO ORDERED in period, not all customers in system
+        totalCustomers: uniqueCustomersInPeriod,
+        allCustomers: customers.length, // Total in system for reference
         period: {
           start: formatDateIL(start),
           end: formatDateIL(end)
@@ -663,8 +694,152 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
-// Helper function to fetch ALL discount codes from Shopify
-async function fetchAllDiscountCodes(baseUrl, headers) {
+// Helper function to fetch ALL discount codes using GraphQL (finds ALL types)
+async function fetchAllDiscountCodesGraphQL(searchTerm = '') {
+  const allCoupons = [];
+
+  try {
+    // GraphQL query to find ALL discount types
+    const query = `
+      query getDiscounts($first: Int!, $after: String, $query: String) {
+        codeDiscountNodes(first: $first, after: $after, query: $query) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            codeDiscount {
+              ... on DiscountCodeBasic {
+                title
+                status
+                startsAt
+                endsAt
+                usageLimit
+                codes(first: 10) {
+                  nodes {
+                    code
+                    usageCount: asyncUsageCount
+                  }
+                }
+                customerGets {
+                  value {
+                    ... on DiscountPercentage {
+                      percentage
+                    }
+                    ... on DiscountAmount {
+                      amount {
+                        amount
+                      }
+                    }
+                  }
+                }
+              }
+              ... on DiscountCodeBxgy {
+                title
+                status
+                startsAt
+                endsAt
+                usageLimit
+                codes(first: 10) {
+                  nodes {
+                    code
+                    usageCount: asyncUsageCount
+                  }
+                }
+              }
+              ... on DiscountCodeFreeShipping {
+                title
+                status
+                startsAt
+                endsAt
+                usageLimit
+                codes(first: 10) {
+                  nodes {
+                    code
+                    usageCount: asyncUsageCount
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    let hasNextPage = true;
+    let cursor = null;
+
+    while (hasNextPage) {
+      console.log(`[Coupons GraphQL] Fetching discounts...`);
+
+      const result = await shopifyService.graphql(query, {
+        first: 50,
+        after: cursor,
+        query: searchTerm ? `title:*${searchTerm}* OR code:*${searchTerm}*` : null
+      });
+
+      if (result.errors) {
+        console.error('[Coupons GraphQL] Errors:', result.errors);
+        break;
+      }
+
+      const nodes = result.data?.codeDiscountNodes?.nodes || [];
+      const pageInfo = result.data?.codeDiscountNodes?.pageInfo || {};
+
+      for (const node of nodes) {
+        const discount = node.codeDiscount;
+        if (!discount) continue;
+
+        const codes = discount.codes?.nodes || [];
+        for (const codeNode of codes) {
+          // Determine value
+          let value = null;
+          let valueType = 'unknown';
+
+          if (discount.customerGets?.value?.percentage) {
+            value = discount.customerGets.value.percentage * 100;
+            valueType = 'percentage';
+          } else if (discount.customerGets?.value?.amount?.amount) {
+            value = parseFloat(discount.customerGets.value.amount.amount);
+            valueType = 'fixed_amount';
+          }
+
+          allCoupons.push({
+            id: node.id,
+            code: codeNode.code,
+            ruleTitle: discount.title || '',
+            value: value,
+            valueType: valueType,
+            usageCount: codeNode.usageCount || 0,
+            usageLimit: discount.usageLimit,
+            startsAt: discount.startsAt,
+            endsAt: discount.endsAt,
+            status: discount.status?.toLowerCase() || 'unknown',
+            isActive: discount.status === 'ACTIVE',
+            source: 'graphql'
+          });
+        }
+      }
+
+      hasNextPage = pageInfo.hasNextPage;
+      cursor = pageInfo.endCursor;
+
+      if (hasNextPage) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    console.log(`[Coupons GraphQL] Found ${allCoupons.length} discount codes`);
+  } catch (e) {
+    console.error('[Coupons GraphQL] Error:', e.message);
+  }
+
+  return allCoupons;
+}
+
+// Helper function to fetch discount codes from REST API (price rules)
+async function fetchAllDiscountCodesREST(baseUrl, headers) {
   const allCoupons = [];
 
   try {
@@ -673,14 +848,14 @@ async function fetchAllDiscountCodes(baseUrl, headers) {
     let hasMore = true;
 
     while (hasMore) {
-      console.log(`[Coupons] Fetching price rules...`);
+      console.log(`[Coupons REST] Fetching price rules...`);
       const priceRulesResponse = await axios.get(priceRulesUrl, {
         headers,
         timeout: 30000
       });
 
       const rules = priceRulesResponse.data.price_rules || [];
-      console.log(`[Coupons] Got ${rules.length} price rules`);
+      console.log(`[Coupons REST] Got ${rules.length} price rules`);
 
       // For each rule, fetch its discount codes
       for (const rule of rules) {
@@ -713,7 +888,8 @@ async function fetchAllDiscountCodes(baseUrl, headers) {
               status: getDiscountStatus(rule),
               minimumAmount: rule.prerequisite_subtotal_range?.greater_than_or_equal_to || null,
               oncePerCustomer: rule.once_per_customer || false,
-              createdAt: c.created_at || rule.created_at
+              createdAt: c.created_at || rule.created_at,
+              source: 'rest'
             });
           }
         } catch (e) {
@@ -768,7 +944,8 @@ router.get('/discounts/search', async (req, res) => {
       });
     }
 
-    const searchTerm = code.trim().toUpperCase();
+    const searchTerm = code.trim();
+    console.log(`[Coupon Search] ========================================`);
     console.log(`[Coupon Search] Searching for: "${searchTerm}"`);
 
     const { baseUrl, headers } = shopifyService.getConfig();
@@ -777,26 +954,45 @@ router.get('/discounts/search', async (req, res) => {
       return res.status(500).json({ success: false, message: 'Shopify לא מוגדר' });
     }
 
-    // Fetch ALL discount codes
-    const allCoupons = await fetchAllDiscountCodes(baseUrl, headers);
-    console.log(`[Coupon Search] Total coupons found: ${allCoupons.length}`);
+    // Fetch from BOTH sources: GraphQL (newer discounts) and REST (price rules)
+    console.log(`[Coupon Search] Fetching from GraphQL API...`);
+    const graphqlCoupons = await fetchAllDiscountCodesGraphQL(searchTerm);
 
-    // Search with partial matching
-    const matches = allCoupons.filter(c => {
+    console.log(`[Coupon Search] Fetching from REST API...`);
+    const restCoupons = await fetchAllDiscountCodesREST(baseUrl, headers);
+
+    // Combine and deduplicate
+    const allCoupons = [...graphqlCoupons, ...restCoupons];
+    const uniqueCoupons = [];
+    const seenCodes = new Set();
+    for (const c of allCoupons) {
+      const codeKey = c.code.toUpperCase();
+      if (!seenCodes.has(codeKey)) {
+        seenCodes.add(codeKey);
+        uniqueCoupons.push(c);
+      }
+    }
+
+    console.log(`[Coupon Search] Total unique coupons: ${uniqueCoupons.length} (GraphQL: ${graphqlCoupons.length}, REST: ${restCoupons.length})`);
+
+    // Search with partial matching (case-insensitive)
+    const searchUpper = searchTerm.toUpperCase();
+    const matches = uniqueCoupons.filter(c => {
       const codeUpper = c.code.toUpperCase();
       const titleUpper = (c.ruleTitle || '').toUpperCase();
-      return codeUpper.includes(searchTerm) ||
-             searchTerm.includes(codeUpper) ||
-             titleUpper.includes(searchTerm) ||
-             codeUpper === searchTerm;
+      return codeUpper.includes(searchUpper) ||
+             searchUpper.includes(codeUpper) ||
+             titleUpper.includes(searchUpper) ||
+             codeUpper === searchUpper;
     });
 
     const elapsed = Date.now() - startTime;
     console.log(`[Coupon Search] Found ${matches.length} matches in ${elapsed}ms`);
+    console.log(`[Coupon Search] ========================================`);
 
     if (matches.length > 0) {
       // Return the best match (exact match first, then first partial)
-      const exactMatch = matches.find(c => c.code.toUpperCase() === searchTerm);
+      const exactMatch = matches.find(c => c.code.toUpperCase() === searchUpper);
       const bestMatch = exactMatch || matches[0];
 
       res.json({
@@ -806,13 +1002,16 @@ router.get('/discounts/search', async (req, res) => {
       });
     } else {
       // Show available coupons when not found
-      const availableCodes = allCoupons.map(c => c.code).slice(0, 15);
+      const availableCodes = uniqueCoupons.map(c => c.code).slice(0, 20);
+      console.log(`[Coupon Search] Available codes: ${availableCodes.join(', ')}`);
+
       res.json({
         success: false,
         message: `לא נמצא קופון "${code}"`,
         availableCoupons: availableCodes,
+        totalCouponsFound: uniqueCoupons.length,
         hint: availableCodes.length > 0
-          ? `קופונים קיימים: ${availableCodes.join(', ')}`
+          ? `קופונים קיימים (${uniqueCoupons.length}): ${availableCodes.join(', ')}`
           : 'לא נמצאו קופונים במערכת'
       });
     }
@@ -832,15 +1031,33 @@ router.get('/discounts/all', async (req, res) => {
       return res.status(500).json({ success: false, message: 'Shopify לא מוגדר' });
     }
 
-    const allCoupons = await fetchAllDiscountCodes(baseUrl, headers);
+    // Fetch from both sources
+    const graphqlCoupons = await fetchAllDiscountCodesGraphQL();
+    const restCoupons = await fetchAllDiscountCodesREST(baseUrl, headers);
 
-    // Sort by creation date (newest first)
-    allCoupons.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    // Combine and deduplicate
+    const allCoupons = [...graphqlCoupons, ...restCoupons];
+    const uniqueCoupons = [];
+    const seenCodes = new Set();
+    for (const c of allCoupons) {
+      const codeKey = c.code.toUpperCase();
+      if (!seenCodes.has(codeKey)) {
+        seenCodes.add(codeKey);
+        uniqueCoupons.push(c);
+      }
+    }
+
+    // Sort by code
+    uniqueCoupons.sort((a, b) => a.code.localeCompare(b.code));
 
     res.json({
       success: true,
-      total: allCoupons.length,
-      data: allCoupons
+      total: uniqueCoupons.length,
+      sources: {
+        graphql: graphqlCoupons.length,
+        rest: restCoupons.length
+      },
+      data: uniqueCoupons
     });
 
   } catch (error) {
