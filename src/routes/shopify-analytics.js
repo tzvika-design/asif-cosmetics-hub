@@ -172,7 +172,7 @@ router.get('/analytics/sales-chart', async (req, res) => {
 
 /**
  * GET /api/shopify/analytics/top-products
- * Top products by sales
+ * Top products by sales - NOW USES REST API
  */
 router.get('/analytics/top-products', async (req, res) => {
   const startTime = Date.now();
@@ -184,16 +184,15 @@ router.get('/analytics/top-products', async (req, res) => {
     // Try preloaded data first (if no filters)
     if (!startDate && !endDate && !search && effectivePeriod === 'month') {
       const preloaded = statsPreloader.getTopProducts();
-      if (preloaded) {
-        const byRevenue = preloaded.byRevenue.slice(0, parseInt(limit));
-        const byQuantity = preloaded.byQuantity.slice(0, parseInt(limit));
+      if (preloaded && preloaded.products && preloaded.products.length > 0) {
+        const byRevenue = preloaded.products.slice(0, parseInt(limit));
 
-        console.log(`[API] /analytics/top-products - PRELOADED in ${Date.now() - startTime}ms`);
+        console.log(`[API] /analytics/top-products - PRELOADED (${byRevenue.length} products) in ${Date.now() - startTime}ms`);
         return res.json({
           success: true,
           data: byRevenue,
           byRevenue,
-          byQuantity,
+          byQuantity: byRevenue,
           total: preloaded.total,
           period: preloaded.period,
           cached: true,
@@ -202,88 +201,90 @@ router.get('/analytics/top-products', async (req, res) => {
       }
     }
 
-    // Live fetch
+    // Live fetch using REST API
     const { start, end } = getDateRange(startDate, endDate, effectivePeriod);
-    const productsData = await shopifyGraphQL.getTopProducts(start, end, parseInt(limit));
+    const orders = await shopifyRest.getOrders(start, end);
+    const topProducts = shopifyRest.getTopProducts(orders, parseInt(limit) * 2); // Fetch extra for filtering
 
     // Apply search filter if provided
-    let byRevenue = productsData.byRevenue;
-    let byQuantity = productsData.byQuantity;
-
+    let filtered = topProducts;
     if (search) {
       const searchLower = search.toLowerCase();
-      byRevenue = byRevenue.filter(p => p.title.toLowerCase().includes(searchLower));
-      byQuantity = byQuantity.filter(p => p.title.toLowerCase().includes(searchLower));
+      filtered = topProducts.filter(p => p.title && p.title.toLowerCase().includes(searchLower));
     }
 
-    console.log(`[API] /analytics/top-products - LIVE in ${Date.now() - startTime}ms`);
+    const byRevenue = filtered.slice(0, parseInt(limit));
+
+    console.log(`[API] /analytics/top-products - LIVE (${byRevenue.length} products) in ${Date.now() - startTime}ms`);
 
     res.json({
       success: true,
       data: byRevenue,
       byRevenue,
-      byQuantity,
-      total: productsData.total,
-      period: productsData.period,
+      byQuantity: byRevenue,
+      total: topProducts.length,
+      period: { start: formatDateIL(start), end: formatDateIL(end) },
       cached: false,
       responseTime: Date.now() - startTime
     });
 
   } catch (error) {
-    console.error('[API] /analytics/top-products error:', error.message);
+    console.error('[API] /analytics/top-products error:', error.message, error.stack);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 /**
  * GET /api/shopify/analytics/top-customers
- * Top customers by spend
+ * Top customers by spend - NOW USES REST API
  */
 router.get('/analytics/top-customers', async (req, res) => {
   const startTime = Date.now();
 
   try {
     const { limit = 20, period, startDate, endDate, search } = req.query;
-    const effectivePeriod = period || 'month';
+    const effectivePeriod = period || 'year'; // Default to year for better customer data
 
     // Try preloaded data first (if no filters)
     if (!startDate && !endDate && !search) {
       const preloaded = statsPreloader.getTopCustomers();
-      if (preloaded) {
-        // Format customers for response
-        const customers = preloaded.customers.slice(0, parseInt(limit)).map(c => ({
+      if (preloaded && preloaded.customers && preloaded.customers.length > 0) {
+        // Format customers for response (preloaded format is already correct from REST)
+        let customers = preloaded.customers.slice(0, parseInt(limit)).map(c => ({
           id: c.id,
-          name: `${c.firstName || ''} ${c.lastName || ''}`.trim() || 'לקוח אנונימי',
+          name: c.name || 'לקוח אנונימי',
           email: c.email || '',
-          orderCount: c.ordersCount || 0,
-          totalSpend: Math.round(parseFloat(c.totalSpentV2?.amount || 0)),
-          lastOrderDate: c.lastOrder?.createdAt ? formatDateIL(c.lastOrder.createdAt) : '-'
+          phone: c.phone || '',
+          orderCount: c.orderCount || 0,
+          totalSpend: c.totalSpent || 0,
+          lastOrderDate: c.lastOrderDate ? formatDateIL(c.lastOrderDate) : '-'
         }));
 
-        console.log(`[API] /analytics/top-customers - PRELOADED in ${Date.now() - startTime}ms`);
+        console.log(`[API] /analytics/top-customers - PRELOADED (${customers.length}) in ${Date.now() - startTime}ms`);
         return res.json({
           success: true,
           data: customers,
-          stats: preloaded.stats,
-          period: preloaded.period,
+          total: preloaded.total,
           cached: true,
           responseTime: Date.now() - startTime
         });
       }
     }
 
-    // Live fetch
+    // Live fetch using REST API
     const { start, end } = getDateRange(startDate, endDate, effectivePeriod);
-    const customersData = await shopifyGraphQL.getCustomers(start, end);
+    const orders = await shopifyRest.getOrders(start, end);
+    const topCustomers = shopifyRest.getTopCustomersFromOrders(orders, parseInt(limit) * 2);
 
     // Format customers
-    let customers = customersData.customers.map(c => ({
+    let customers = topCustomers.map(c => ({
       id: c.id,
-      name: `${c.firstName || ''} ${c.lastName || ''}`.trim() || 'לקוח אנונימי',
+      name: c.name || 'לקוח אנונימי',
       email: c.email || '',
-      orderCount: c.ordersCount || 0,
-      totalSpend: Math.round(parseFloat(c.totalSpentV2?.amount || 0)),
-      lastOrderDate: c.lastOrder?.createdAt ? formatDateIL(c.lastOrder.createdAt) : '-'
+      phone: c.phone || '',
+      orderCount: c.orderCount || 0,
+      totalSpend: c.totalSpent || 0,
+      lastOrderDate: c.lastOrderDate ? formatDateIL(c.lastOrderDate) : '-'
     }));
 
     // Apply search filter
@@ -295,31 +296,29 @@ router.get('/analytics/top-customers', async (req, res) => {
       );
     }
 
-    // Sort by total spend and limit
-    customers = customers
-      .sort((a, b) => b.totalSpend - a.totalSpend)
-      .slice(0, parseInt(limit));
+    // Limit results
+    customers = customers.slice(0, parseInt(limit));
 
-    console.log(`[API] /analytics/top-customers - LIVE in ${Date.now() - startTime}ms`);
+    console.log(`[API] /analytics/top-customers - LIVE (${customers.length}) in ${Date.now() - startTime}ms`);
 
     res.json({
       success: true,
       data: customers,
-      stats: customersData.stats,
-      period: customersData.period,
+      total: topCustomers.length,
+      period: { start: formatDateIL(start), end: formatDateIL(end) },
       cached: false,
       responseTime: Date.now() - startTime
     });
 
   } catch (error) {
-    console.error('[API] /analytics/top-customers error:', error.message);
+    console.error('[API] /analytics/top-customers error:', error.message, error.stack);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 /**
  * GET /api/shopify/orders/recent
- * Recent orders list
+ * Recent orders list - NOW USES REST API
  */
 router.get('/orders/recent', async (req, res) => {
   const startTime = Date.now();
@@ -327,37 +326,37 @@ router.get('/orders/recent', async (req, res) => {
   try {
     const { limit = 20 } = req.query;
 
-    // Get last 7 days of orders
+    // Get last 7 days of orders using REST API
     const end = new Date();
     const start = new Date();
     start.setDate(start.getDate() - 7);
 
-    const ordersData = await shopifyGraphQL.getOrders(start, end);
+    const orders = await shopifyRest.getOrders(start, end);
 
-    // Format orders for display
+    // Format orders for display (REST API field names)
     const statusMap = {
-      'PAID': 'שולם',
-      'PENDING': 'ממתין',
-      'REFUNDED': 'הוחזר',
-      'PARTIALLY_REFUNDED': 'הוחזר חלקית',
-      'VOIDED': 'בוטל',
-      'AUTHORIZED': 'מאושר'
+      'paid': 'שולם',
+      'pending': 'ממתין',
+      'refunded': 'הוחזר',
+      'partially_refunded': 'הוחזר חלקית',
+      'voided': 'בוטל',
+      'authorized': 'מאושר'
     };
 
-    const recentOrders = ordersData.orders.slice(0, parseInt(limit)).map(order => ({
+    const recentOrders = orders.slice(0, parseInt(limit)).map(order => ({
       id: order.id,
       orderNumber: order.name,
       customerName: order.customer
-        ? `${order.customer.firstName || ''} ${order.customer.lastName || ''}`.trim() || 'לקוח אנונימי'
+        ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'לקוח אנונימי'
         : 'אורח',
       email: order.customer?.email || '',
-      total: Math.round(parseFloat(order.totalPriceSet?.shopMoney?.amount || 0)),
-      discountCode: (order.discountCodes || []).join(', ') || '-',
-      status: statusMap[order.displayFinancialStatus] || order.displayFinancialStatus,
-      statusRaw: order.displayFinancialStatus?.toLowerCase() || 'pending',
-      fulfillment: order.displayFulfillmentStatus || 'unfulfilled',
-      date: formatDateIL(order.createdAt),
-      itemCount: (order.lineItems?.nodes || []).reduce((sum, item) => sum + item.quantity, 0)
+      total: Math.round(parseFloat(order.total_price || 0)),
+      discountCode: (order.discount_codes || []).map(d => d.code).join(', ') || '-',
+      status: statusMap[order.financial_status] || order.financial_status || 'pending',
+      statusRaw: order.financial_status || 'pending',
+      fulfillment: order.fulfillment_status || 'unfulfilled',
+      date: formatDateIL(order.created_at),
+      itemCount: (order.line_items || []).reduce((sum, item) => sum + (item.quantity || 0), 0)
     }));
 
     console.log(`[API] /orders/recent - ${recentOrders.length} orders in ${Date.now() - startTime}ms`);
@@ -370,7 +369,7 @@ router.get('/orders/recent', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('[API] /orders/recent error:', error.message);
+    console.error('[API] /orders/recent error:', error.message, error.stack);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -583,20 +582,32 @@ router.get('/analytics', async (req, res) => {
         responseTime: Date.now() - startTime
       });
     } else {
-      // Fallback to live fetch
-      const end = new Date();
-      const weekStart = new Date();
-      weekStart.setDate(weekStart.getDate() - 7);
+      // Fallback to live fetch using REST API
+      console.log('[API] /analytics - Fetching live data via REST API...');
 
-      const stats = await shopifyGraphQL.getStats(weekStart, end);
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+      const [todayOrders, weekOrders, monthOrders] = await Promise.all([
+        shopifyRest.getOrders(todayStart, now),
+        shopifyRest.getOrders(weekStart, now),
+        shopifyRest.getOrders(monthStart, now)
+      ]);
+
+      const todayStats = shopifyRest.calculateStats(todayOrders);
+      const weekStats = shopifyRest.calculateStats(weekOrders);
+      const monthStats = shopifyRest.calculateStats(monthOrders);
+      const dailySales = shopifyRest.getDailySales(monthOrders, monthStart, now);
 
       res.json({
         success: true,
         data: {
-          today: { orders: stats.todayOrders, total: stats.todaySales, average: stats.avgOrderValue },
-          week: { orders: stats.orderCount, total: stats.totalSales, average: stats.avgOrderValue },
-          month: { orders: stats.orderCount, total: stats.totalSales, average: stats.avgOrderValue },
-          dailySales: [],
+          today: { orders: todayStats.orderCount, total: todayStats.totalSales, average: todayStats.avgOrderValue },
+          week: { orders: weekStats.orderCount, total: weekStats.totalSales, average: weekStats.avgOrderValue },
+          month: { orders: monthStats.orderCount, total: monthStats.totalSales, average: monthStats.avgOrderValue },
+          dailySales: dailySales.slice(-7),
           currency: 'ILS'
         },
         cached: false,

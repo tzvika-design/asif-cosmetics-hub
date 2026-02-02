@@ -284,6 +284,14 @@ class ShopifyREST {
   }
 
   /**
+   * Format date as DD/MM/YYYY (Israeli format)
+   */
+  formatDateDisplay(date) {
+    const d = new Date(date);
+    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+  }
+
+  /**
    * Get daily sales breakdown from orders
    */
   getDailySales(orders, startDate, endDate) {
@@ -306,9 +314,10 @@ class ShopifyREST {
       }
     });
 
-    // Convert to array
+    // Convert to array with both date and label fields for chart compatibility
     return Object.entries(salesByDate).map(([date, stats]) => ({
       date,
+      label: this.formatDateDisplay(date), // DD/MM/YYYY format for chart
       sales: Math.round(stats.sales),
       orders: stats.orders
     }));
