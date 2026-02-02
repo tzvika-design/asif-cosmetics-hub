@@ -1874,4 +1874,280 @@ router.get('/stats/lastYear', async (req, res) => {
   }
 });
 
+// ==========================================
+// OAUTH ENDPOINTS - Get new access token
+// ==========================================
+
+const SHOPIFY_CLIENT_ID = '4669eaf94832ba48190302d0fef50aba';
+const SHOPIFY_SHOP = 'asif-cosmetics.myshopify.com';
+const REDIRECT_URI = 'https://asif-cosmetics-hub-production.up.railway.app/api/shopify/callback';
+const SCOPES = 'read_all_orders,read_orders,read_customers,read_products,read_inventory,read_discounts,read_price_rules,read_analytics';
+
+/**
+ * GET /api/shopify/auth/start
+ * Start OAuth flow - redirects to Shopify authorization page
+ */
+router.get('/auth/start', (req, res) => {
+  const state = 'asif_' + Date.now(); // Simple state for CSRF protection
+
+  const authUrl = `https://${SHOPIFY_SHOP}/admin/oauth/authorize?` +
+    `client_id=${SHOPIFY_CLIENT_ID}` +
+    `&scope=${encodeURIComponent(SCOPES)}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&state=${state}`;
+
+  console.log('[OAuth] Starting auth flow, redirecting to:', authUrl);
+
+  res.redirect(authUrl);
+});
+
+/**
+ * GET /api/shopify/callback
+ * OAuth callback - exchanges code for access token
+ */
+router.get('/callback', async (req, res) => {
+  const axios = require('axios');
+  const { code, state, error, error_description } = req.query;
+
+  console.log('[OAuth] Callback received:', { code: code ? 'present' : 'missing', state, error });
+
+  // Check for errors from Shopify
+  if (error) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="UTF-8">
+        <title>OAuth Error</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; background: #1a1a2e; color: #fff; }
+          .error { background: #ff4444; padding: 20px; border-radius: 8px; }
+        </style>
+      </head>
+      <body>
+        <h1>OAuth Error</h1>
+        <div class="error">
+          <p><strong>Error:</strong> ${error}</p>
+          <p><strong>Description:</strong> ${error_description || 'No description'}</p>
+        </div>
+        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+      </body>
+      </html>
+    `);
+  }
+
+  if (!code) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="UTF-8">
+        <title>Missing Code</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; background: #1a1a2e; color: #fff; }
+        </style>
+      </head>
+      <body>
+        <h1>Missing Authorization Code</h1>
+        <p>No code received from Shopify.</p>
+        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+      </body>
+      </html>
+    `);
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenResponse = await axios.post(
+      `https://${SHOPIFY_SHOP}/admin/oauth/access_token`,
+      {
+        client_id: SHOPIFY_CLIENT_ID,
+        client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+        code: code
+      },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000
+      }
+    );
+
+    const { access_token, scope } = tokenResponse.data;
+
+    console.log('[OAuth] SUCCESS! Got access token. Scopes:', scope);
+
+    // Return HTML page with the token (so user can copy it)
+    res.send(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="UTF-8">
+        <title>OAuth Success!</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            padding: 40px;
+            background: #1a1a2e;
+            color: #fff;
+            max-width: 800px;
+            margin: 0 auto;
+          }
+          .success {
+            background: #28a745;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+          }
+          .token-box {
+            background: #2d2d44;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 14px;
+            border: 2px solid #d4a853;
+          }
+          .scopes {
+            background: #2d2d44;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+          }
+          .scope-item {
+            display: inline-block;
+            background: #d4a853;
+            color: #000;
+            padding: 4px 8px;
+            margin: 4px;
+            border-radius: 4px;
+            font-size: 12px;
+          }
+          button {
+            background: #d4a853;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+          }
+          button:hover { background: #c49743; }
+          .instructions {
+            background: #2d2d44;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+          }
+          code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; }
+        </style>
+      </head>
+      <body>
+        <div class="success">
+          <h1>OAuth Success!</h1>
+          <p>New access token generated successfully.</p>
+        </div>
+
+        <h2>Your New Access Token:</h2>
+        <div class="token-box" id="token">${access_token}</div>
+        <button onclick="copyToken()">Copy Token</button>
+
+        <h2>Granted Scopes:</h2>
+        <div class="scopes">
+          ${(scope || '').split(',').map(s => `<span class="scope-item">${s.trim()}</span>`).join('')}
+        </div>
+
+        <div class="instructions">
+          <h2>Next Steps:</h2>
+          <ol>
+            <li>Copy the access token above</li>
+            <li>Go to Railway Dashboard</li>
+            <li>Update the <code>SHOPIFY_ACCESS_TOKEN</code> environment variable</li>
+            <li>Redeploy the app</li>
+            <li>Test with: <a href="/api/shopify/debug/last-year" style="color: #d4a853;">/api/shopify/debug/last-year</a></li>
+          </ol>
+        </div>
+
+        <script>
+          function copyToken() {
+            const token = document.getElementById('token').innerText;
+            navigator.clipboard.writeText(token).then(() => {
+              alert('Token copied to clipboard!');
+            });
+          }
+        </script>
+      </body>
+      </html>
+    `);
+
+  } catch (error) {
+    console.error('[OAuth] Error exchanging code:', error.response?.data || error.message);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="UTF-8">
+        <title>OAuth Error</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; background: #1a1a2e; color: #fff; }
+          .error { background: #ff4444; padding: 20px; border-radius: 8px; }
+          pre { background: #2d2d44; padding: 15px; border-radius: 8px; overflow-x: auto; }
+        </style>
+      </head>
+      <body>
+        <h1>Token Exchange Failed</h1>
+        <div class="error">
+          <p><strong>Error:</strong> ${error.message}</p>
+        </div>
+        <h2>Response from Shopify:</h2>
+        <pre>${JSON.stringify(error.response?.data || 'No response data', null, 2)}</pre>
+        <h2>Check:</h2>
+        <ul>
+          <li>Is <code>SHOPIFY_CLIENT_SECRET</code> set correctly in Railway?</li>
+          <li>Is the redirect URI exactly: <code>${REDIRECT_URI}</code>?</li>
+        </ul>
+        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+      </body>
+      </html>
+    `);
+  }
+});
+
+/**
+ * GET /api/shopify/auth/status
+ * Check current OAuth status
+ */
+router.get('/auth/status', async (req, res) => {
+  const axios = require('axios');
+
+  const result = {
+    hasClientId: !!SHOPIFY_CLIENT_ID,
+    hasClientSecret: !!process.env.SHOPIFY_CLIENT_SECRET,
+    hasAccessToken: !!process.env.SHOPIFY_ACCESS_TOKEN,
+    shop: SHOPIFY_SHOP,
+    scopes: SCOPES
+  };
+
+  // Test current token
+  if (process.env.SHOPIFY_ACCESS_TOKEN) {
+    try {
+      const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+      const response = await axios.get(
+        `https://${SHOPIFY_SHOP}/admin/api/${apiVersion}/shop.json`,
+        {
+          headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+          timeout: 10000
+        }
+      );
+      result.tokenValid = true;
+      result.shopName = response.data.shop?.name;
+    } catch (error) {
+      result.tokenValid = false;
+      result.tokenError = error.response?.status === 401 ? 'Token invalid or expired' : error.message;
+    }
+  }
+
+  res.json(result);
+});
+
 module.exports = router;
