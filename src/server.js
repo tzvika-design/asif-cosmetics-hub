@@ -147,6 +147,82 @@ app.get('/api/shopify/callback', async (req, res) => {
 });
 
 // ==========================================
+// SIMPLE 2025 DATA ENDPOINT - NO SERVICES, DIRECT API CALL
+// ==========================================
+app.get('/api/shopify/2025', async (req, res) => {
+  const shop = process.env.SHOPIFY_STORE_URL || 'asif-cosmetics.myshopify.com';
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+
+  if (!token) {
+    return res.json({ error: 'No SHOPIFY_ACCESS_TOKEN set' });
+  }
+
+  const allOrders = [];
+  let page = 0;
+  let nextUrl = `https://${shop}/admin/api/2024-01/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z`;
+
+  console.log('[2025] Starting fetch...');
+
+  try {
+    while (nextUrl && page < 100) {
+      page++;
+      const response = await axios.get(nextUrl, {
+        headers: { 'X-Shopify-Access-Token': token },
+        timeout: 30000
+      });
+
+      const orders = response.data.orders || [];
+      allOrders.push(...orders);
+      console.log(`[2025] Page ${page}: ${orders.length} orders, total: ${allOrders.length}`);
+
+      // Get next page
+      const link = response.headers.link;
+      if (link && link.includes('rel="next"')) {
+        const match = link.match(/<([^>]+)>;\s*rel="next"/);
+        nextUrl = match ? match[1] : null;
+      } else {
+        nextUrl = null;
+      }
+
+      if (nextUrl) await new Promise(r => setTimeout(r, 100));
+    }
+
+    const total = allOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+
+    // Monthly breakdown
+    const months = {};
+    allOrders.forEach(o => {
+      const m = o.created_at?.substring(0, 7) || 'unknown';
+      if (!months[m]) months[m] = { count: 0, sales: 0 };
+      months[m].count++;
+      months[m].sales += parseFloat(o.total_price || 0);
+    });
+
+    res.json({
+      success: true,
+      year: 2025,
+      totalOrders: allOrders.length,
+      totalSales: Math.round(total),
+      avgOrder: allOrders.length ? Math.round(total / allOrders.length) : 0,
+      pages: page,
+      monthly: Object.entries(months).sort().map(([m, d]) => ({
+        month: m,
+        orders: d.count,
+        sales: Math.round(d.sales)
+      }))
+    });
+
+  } catch (err) {
+    console.error('[2025] Error:', err.message);
+    res.json({
+      error: err.message,
+      status: err.response?.status,
+      data: err.response?.data
+    });
+  }
+});
+
+// ==========================================
 // API Routes
 // ==========================================
 app.use('/api', apiRoutes);
