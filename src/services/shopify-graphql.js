@@ -196,8 +196,12 @@ class ShopifyGraphQL {
       }
     `;
 
-    // Build date query
-    const dateQuery = `created_at:>=${this.formatDate(startDate)} AND created_at:<=${this.formatDate(endDate)}`;
+    // Build date query - use simple date format YYYY-MM-DD
+    const startISO = startDate.toISOString().split('T')[0];
+    const endISO = endDate.toISOString().split('T')[0];
+    const dateQuery = `created_at:>=${startISO} created_at:<=${endISO}`;
+
+    console.log(`[ShopifyGraphQL] getOrders date query: "${dateQuery}"`);
 
     while (hasNextPage) {
       pageCount++;
@@ -209,6 +213,8 @@ class ShopifyGraphQL {
           after: cursor,
           query: dateQuery
         });
+
+        console.log(`[ShopifyGraphQL] Page ${pageCount} returned ${data.orders?.nodes?.length || 0} orders`);
 
         const pageOrders = data.orders.nodes || [];
         orders.push(...pageOrders);
@@ -248,6 +254,8 @@ class ShopifyGraphQL {
     });
 
     totals.avgOrderValue = orders.length > 0 ? totals.netSales / orders.length : 0;
+
+    console.log(`[ShopifyGraphQL] getOrders COMPLETE: ${orders.length} orders, ₪${Math.round(totals.netSales)} total`);
 
     const result = {
       orders,

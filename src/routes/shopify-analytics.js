@@ -818,4 +818,177 @@ router.get('/debug/orders', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/shopify/debug/raw
+ * Test RAW Shopify API call - no date filter, no cache
+ */
+router.get('/debug/raw', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ error: 'Shopify credentials not configured' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+
+  const results = {
+    store: process.env.SHOPIFY_STORE_URL,
+    apiVersion,
+    tests: {}
+  };
+
+  // Test 1: Get shop info
+  try {
+    const shopResponse = await axios.get(`${baseUrl}/shop.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN }
+    });
+    results.tests.shop = {
+      success: true,
+      name: shopResponse.data.shop?.name,
+      email: shopResponse.data.shop?.email,
+      currency: shopResponse.data.shop?.currency
+    };
+  } catch (error) {
+    results.tests.shop = { success: false, error: error.response?.data || error.message };
+  }
+
+  // Test 2: Get orders count (REST API)
+  try {
+    const countResponse = await axios.get(`${baseUrl}/orders/count.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN }
+    });
+    results.tests.ordersCount = {
+      success: true,
+      total: countResponse.data.count
+    };
+  } catch (error) {
+    results.tests.ordersCount = { success: false, error: error.response?.data || error.message };
+  }
+
+  // Test 3: Get recent orders (REST API - last 10)
+  try {
+    const ordersResponse = await axios.get(`${baseUrl}/orders.json?limit=10&status=any`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN }
+    });
+    const orders = ordersResponse.data.orders || [];
+    results.tests.recentOrders = {
+      success: true,
+      count: orders.length,
+      orders: orders.map(o => ({
+        id: o.id,
+        name: o.name,
+        created_at: o.created_at,
+        total_price: o.total_price,
+        financial_status: o.financial_status,
+        customer: o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : 'Guest'
+      }))
+    };
+  } catch (error) {
+    results.tests.recentOrders = { success: false, error: error.response?.data || error.message };
+  }
+
+  // Test 4: Get customers count
+  try {
+    const customersResponse = await axios.get(`${baseUrl}/customers/count.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN }
+    });
+    results.tests.customersCount = {
+      success: true,
+      total: customersResponse.data.count
+    };
+  } catch (error) {
+    results.tests.customersCount = { success: false, error: error.response?.data || error.message };
+  }
+
+  // Test 5: Get products count
+  try {
+    const productsResponse = await axios.get(`${baseUrl}/products/count.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN }
+    });
+    results.tests.productsCount = {
+      success: true,
+      total: productsResponse.data.count
+    };
+  } catch (error) {
+    results.tests.productsCount = { success: false, error: error.response?.data || error.message };
+  }
+
+  // Test 6: GraphQL test - get first 5 orders without date filter
+  try {
+    const graphqlQuery = `
+      query {
+        orders(first: 5, sortKey: CREATED_AT, reverse: true) {
+          nodes {
+            id
+            name
+            createdAt
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const graphqlResponse = await axios.post(
+      `${baseUrl}/graphql.json`,
+      { query: graphqlQuery },
+      {
+        headers: {
+          'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (graphqlResponse.data.errors) {
+      results.tests.graphqlOrders = {
+        success: false,
+        errors: graphqlResponse.data.errors
+      };
+    } else {
+      const orders = graphqlResponse.data.data?.orders?.nodes || [];
+      results.tests.graphqlOrders = {
+        success: true,
+        count: orders.length,
+        orders: orders.map(o => ({
+          name: o.name,
+          createdAt: o.createdAt,
+          total: o.totalPriceSet?.shopMoney?.amount
+        }))
+      };
+    }
+  } catch (error) {
+    results.tests.graphqlOrders = { success: false, error: error.response?.data || error.message };
+  }
+
+  res.json(results);
+});
+
+/**
+ * POST /api/shopify/sync/trigger
+ * Manually trigger a full sync
+ */
+router.post('/sync/trigger', async (req, res) => {
+  try {
+    const shopifySync = require('../services/shopify-sync');
+    console.log('[API] Manual sync triggered');
+
+    const result = await shopifySync.runFullSync();
+
+    res.json({
+      success: true,
+      message: 'Sync completed',
+      result
+    });
+  } catch (error) {
+    console.error('[API] Sync error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
