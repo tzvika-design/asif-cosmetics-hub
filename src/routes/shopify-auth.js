@@ -60,8 +60,11 @@ router.get('/install', (req, res) => {
     }
   }
 
-  // Build redirect URI
-  const redirectUri = `${req.protocol}://${req.get('host')}/api/shopify/callback`;
+  // Build redirect URI (force https for Railway/production)
+  const host = req.get('host');
+  const isProduction = host.includes('railway.app') || host.includes('up.railway.app') || process.env.NODE_ENV === 'production';
+  const protocol = isProduction ? 'https' : req.protocol;
+  const redirectUri = `${protocol}://${host}/api/shopify/callback`;
 
   // Build Shopify OAuth URL
   const authUrl = new URL(`https://${SHOPIFY_STORE}/admin/oauth/authorize`);

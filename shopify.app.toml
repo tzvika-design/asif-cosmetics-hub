@@ -1,0 +1,19 @@
+# Shopify App Configuration
+# Learn more: https://shopify.dev/docs/apps/tools/cli/configuration
+
+name = "Asif Cosmetics Hub"
+client_id = ""
+
+[access_scopes]
+scopes = "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory"
+
+[auth]
+redirect_urls = [
+  "https://asif-cosmetics-hub-production.up.railway.app/api/shopify/callback"
+]
+
+[webhooks]
+api_version = "2024-01"
+
+[pos]
+embedded = false
