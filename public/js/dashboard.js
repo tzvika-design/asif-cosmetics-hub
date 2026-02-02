@@ -117,6 +117,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // Check Claude API Status
   async function checkClaudeStatus() {
     const statusCard = document.getElementById('statusClaude');
+    if (!statusCard) return;
     const badge = statusCard.querySelector('.status-badge');
 
     try {
@@ -136,6 +137,42 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  // Check Shopify Status
+  async function checkShopifyStatus() {
+    const statusCard = document.getElementById('statusShopify');
+    if (!statusCard) return;
+    const badge = statusCard.querySelector('.status-badge');
+
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/test');
+      const data = await response.json();
+
+      if (data.success) {
+        badge.textContent = 'מחובר';
+        badge.className = 'status-badge connected';
+        // Update shop name if available
+        const shopName = statusCard.querySelector('.status-card-content p');
+        if (shopName && data.shop && data.shop.name) {
+          shopName.textContent = data.shop.name;
+        }
+      } else {
+        badge.textContent = 'לא מחובר';
+        badge.className = 'status-badge disconnected';
+      }
+    } catch (error) {
+      badge.textContent = 'שגיאה';
+      badge.className = 'status-badge disconnected';
+    }
+  }
+
+  // Check all service statuses
+  async function checkAllStatuses() {
+    await Promise.all([
+      checkClaudeStatus(),
+      checkShopifyStatus()
+    ]);
+  }
+
   // Settings
   const saveSettings = document.getElementById('saveSettings');
   if (saveSettings) {
@@ -145,6 +182,6 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // Initialize
-  checkClaudeStatus();
+  checkAllStatuses();
   console.log('Dashboard initialized');
 });
