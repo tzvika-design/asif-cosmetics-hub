@@ -660,134 +660,109 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
-// GET /api/shopify/discounts - Coupon codes (with caching)
-// FIXED: Fetch ALL price rules and their discount codes (not just first 20)
-router.get('/discounts', async (req, res) => {
+// GET /api/shopify/discounts/search - Search for specific coupon code
+// NEW: Search-based approach - user enters coupon code and we find it
+router.get('/discounts/search', async (req, res) => {
   try {
-    if (isCacheValid('discounts')) {
-      console.log('Returning cached discounts');
+    const { code } = req.query;
+
+    if (!code || code.trim().length === 0) {
       return res.json({
-        success: true,
-        data: cache.discounts.data,
-        total: cache.discounts.data.length,
-        cached: true,
-        cacheAge: getCacheAge('discounts')
+        success: false,
+        message: 'נא להזין קוד קופון לחיפוש'
       });
     }
 
+    const searchCode = code.trim().toUpperCase();
+    console.log(`Searching for coupon: ${searchCode}`);
+
     const { baseUrl, headers } = shopifyService.getConfig();
-    const allDiscounts = [];
 
-    console.log('=== FETCHING ALL SHOPIFY DISCOUNTS ===');
-
-    // Fetch ALL price rules (with pagination)
+    // Fetch all price rules
     let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
-    let allPriceRules = [];
+    let foundCoupon = null;
 
-    while (priceRulesUrl) {
+    while (priceRulesUrl && !foundCoupon) {
       const priceRulesResponse = await rateLimitedRequest(() =>
-        axios.get(priceRulesUrl, axiosConfig(headers, 60000))
+        axios.get(priceRulesUrl, axiosConfig(headers, 30000))
       );
 
       const rules = priceRulesResponse.data.price_rules || [];
-      allPriceRules = allPriceRules.concat(rules);
-      console.log(`Fetched ${rules.length} price rules (total: ${allPriceRules.length})`);
 
+      // Search discount codes for each rule
+      for (const rule of rules) {
+        const codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
+
+        try {
+          const codesResponse = await rateLimitedRequest(() =>
+            axios.get(codesUrl, axiosConfig(headers, 15000))
+          );
+
+          const codes = codesResponse.data.discount_codes || [];
+          const matchingCode = codes.find(c => c.code.toUpperCase() === searchCode);
+
+          if (matchingCode) {
+            foundCoupon = {
+              id: matchingCode.id,
+              priceRuleId: rule.id,
+              code: matchingCode.code,
+              value: rule.value,
+              valueType: rule.value_type,
+              targetType: rule.target_type,
+              usageCount: matchingCode.usage_count || 0,
+              usageLimit: rule.usage_limit,
+              startsAt: rule.starts_at,
+              endsAt: rule.ends_at,
+              isActive: isDiscountActive(rule),
+              minimumAmount: rule.prerequisite_subtotal_range?.greater_than_or_equal_to || null,
+              oncePerCustomer: rule.once_per_customer || false,
+              customerSelection: rule.customer_selection
+            };
+            break;
+          }
+        } catch (e) {
+          console.error(`Error searching rule ${rule.id}:`, e.message);
+        }
+      }
+
+      // Check for pagination
       const linkHeader = priceRulesResponse.headers.link;
       priceRulesUrl = null;
-      if (linkHeader) {
+      if (linkHeader && !foundCoupon) {
         const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
         if (nextMatch) priceRulesUrl = nextMatch[1];
       }
     }
 
-    console.log(`Total price rules found: ${allPriceRules.length}`);
-
-    // Get discount codes for ALL price rules (not just first 20)
-    for (let i = 0; i < allPriceRules.length; i++) {
-      const rule = allPriceRules[i];
-      let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
-
-      // Rate limiting: wait between requests
-      if (i > 0 && i % 5 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-
-      while (codesUrl) {
-        try {
-          const codesResponse = await rateLimitedRequest(() =>
-            axios.get(codesUrl, axiosConfig(headers, 30000))
-          );
-
-          const codes = codesResponse.data.discount_codes || [];
-
-          for (const code of codes) {
-            allDiscounts.push({
-              id: code.id,
-              priceRuleId: rule.id,
-              code: code.code,
-              title: code.code,
-              value: rule.value,
-              valueType: rule.value_type,
-              targetType: rule.target_type,
-              usageCount: code.usage_count || 0,
-              usageLimit: rule.usage_limit,
-              startsAt: rule.starts_at,
-              endsAt: rule.ends_at,
-              source: 'price_rule',
-              // Check if coupon is active
-              isActive: isDiscountActive(rule)
-            });
-          }
-
-          const linkHeader = codesResponse.headers.link;
-          codesUrl = null;
-          if (linkHeader) {
-            const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
-            if (nextMatch) codesUrl = nextMatch[1];
-          }
-        } catch (e) {
-          console.error(`Error fetching codes for rule ${rule.id}:`, e.message);
-          if (e.response?.status === 429) {
-            console.log('Rate limited, waiting 3 seconds...');
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            continue;
-          }
-          codesUrl = null;
-        }
-      }
-    }
-
-    console.log(`Total discount codes found: ${allDiscounts.length}`);
-
-    // Sort: active first, then by usage count
-    allDiscounts.sort((a, b) => {
-      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-      return b.usageCount - a.usageCount;
-    });
-
-    cache.discounts.data = allDiscounts;
-    cache.discounts.timestamp = Date.now();
-
-    res.json({
-      success: true,
-      data: allDiscounts,
-      total: allDiscounts.length,
-      totalPriceRules: allPriceRules.length,
-      cached: false
-    });
-
-  } catch (error) {
-    console.error('Discounts error:', error.message);
-    if (cache.discounts.data) {
-      return res.json({
+    if (foundCoupon) {
+      console.log(`Found coupon: ${foundCoupon.code}`);
+      res.json({
         success: true,
-        data: cache.discounts.data,
-        total: cache.discounts.data.length,
-        cached: true,
-        stale: true
+        data: foundCoupon
+      });
+    } else {
+      res.json({
+        success: false,
+        message: `לא נמצא קופון עם הקוד "${code}"`
       });
     }
+
+  } catch (error) {
+    console.error('Coupon search error:', error.message);
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/discounts - Legacy endpoint (still available for backwards compatibility)
+router.get('/discounts', async (req, res) => {
+  try {
+    // Return empty with message to use search instead
+    res.json({
+      success: true,
+      data: [],
+      message: 'השתמש בחיפוש קופון ספציפי'
+    });
+  } catch (error) {
     res.status(500).json({ error: true, message: error.message });
   }
 });

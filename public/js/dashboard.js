@@ -720,15 +720,16 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function renderChartJS(chartData) {
-    const canvas = document.getElementById('salesChartCanvas');
-    if (!canvas) {
-      console.error('Chart canvas not found');
+    const chartContainer = document.querySelector('.chart-container');
+    if (!chartContainer) {
+      console.error('Chart container not found');
       return;
     }
 
     // Check if Chart.js is loaded
     if (typeof Chart === 'undefined') {
-      console.error('Chart.js not loaded');
+      console.error('Chart.js not loaded - waiting for it');
+      setTimeout(() => renderChartJS(chartData), 500);
       return;
     }
 
@@ -741,15 +742,21 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle empty or invalid data
     if (!chartData || !Array.isArray(chartData) || chartData.length === 0) {
       console.warn('No chart data available');
-      const parent = canvas.parentElement;
-      if (parent) {
-        parent.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">אין נתוני מכירות לתקופה זו</p>';
-      }
+      chartContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">אין נתוני מכירות לתקופה זו</p>';
       return;
+    }
+
+    // Ensure canvas exists
+    let canvas = document.getElementById('salesChartCanvas');
+    if (!canvas) {
+      chartContainer.innerHTML = '<canvas id="salesChartCanvas"></canvas>';
+      canvas = document.getElementById('salesChartCanvas');
     }
 
     // Prepare data - show last 14 days max for readability
     const displayData = chartData.slice(-14);
+
+    console.log('Rendering chart with', displayData.length, 'data points');
 
     try {
       const ctx = canvas.getContext('2d');
@@ -871,39 +878,40 @@ document.addEventListener('DOMContentLoaded', function() {
     const analyticsSelector = document.getElementById('analyticsPeriodSelector');
     if (analyticsSelector) {
       const periodBtns = analyticsSelector.querySelectorAll('.period-btn[data-period]');
-      console.log('Setting up', periodBtns.length, 'period buttons');
+      console.log('Setting up', periodBtns.length, 'analytics period buttons');
 
       periodBtns.forEach(btn => {
-        // Remove any existing listeners by cloning
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
+        // Use direct event listener without cloning to avoid issues
+        btn.onclick = null; // Clear any existing
 
-        newBtn.addEventListener('click', function(e) {
+        btn.addEventListener('click', async function(e) {
           e.preventDefault();
-          console.log('Period button clicked:', this.dataset.period);
+          e.stopPropagation();
 
-          // Update active state
+          const period = this.dataset.period;
+          console.log('Analytics period clicked:', period);
+
+          // Update active state IMMEDIATELY
           analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
           this.classList.add('active');
 
-          const period = this.dataset.period;
+          // Update global state
           currentPeriod = period;
 
-          // Reload all data with new period
+          // Load data immediately - don't wait
+          console.log('Loading data for period:', period);
           loadKPICards(period);
           loadSalesChart(period);
           loadTopProductsTable();
-        });
+        }, { once: false });
       });
     }
 
     // Custom date button for Analytics
     const analyticsCustomBtn = document.getElementById('analyticsCustomDateBtn');
     if (analyticsCustomBtn) {
-      const newCustomBtn = analyticsCustomBtn.cloneNode(true);
-      analyticsCustomBtn.parentNode.replaceChild(newCustomBtn, analyticsCustomBtn);
-
-      newCustomBtn.addEventListener('click', function(e) {
+      analyticsCustomBtn.onclick = null;
+      analyticsCustomBtn.addEventListener('click', function(e) {
         e.preventDefault();
         const startDate = document.getElementById('analyticsStartDate').value;
         const endDate = document.getElementById('analyticsEndDate').value;
@@ -989,34 +997,49 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
-  // CUSTOMERS PAGE
+  // CUSTOMERS PAGE WITH SORTING
   // ==========================================
 
   let customersPeriod = 'month';
   let customersSearchTerm = '';
+  let customersData = [];
+  let customersSortColumn = 'totalSpend';
+  let customersSortAsc = false; // false = high to low (default)
 
   async function loadCustomersPage() {
-    await Promise.all([
-      loadCustomerStats(),
-      loadTopCustomersFiltered()
-    ]);
     setupCustomersPeriodSelector();
     setupCustomersSearch();
+    setupCustomersSorting();
+    // Load data with current period (not waiting for click)
+    await loadCustomerStatsFiltered(customersPeriod);
+    await loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
   }
 
-  async function loadCustomerStats() {
+  async function loadCustomerStatsFiltered(period = customersPeriod) {
     try {
-      const response = await fetch(API_BASE + '/api/shopify/customers/stats');
+      // Use the summary endpoint with period parameter
+      const response = await fetch(API_BASE + '/api/shopify/analytics/top-customers?limit=250&period=' + period);
       const data = await response.json();
 
       if (data.success) {
-        const d = data.data;
         const el = (id) => document.getElementById(id);
+        const customers = data.data || [];
 
-        if (el('statTotalCustomers')) el('statTotalCustomers').textContent = d.totalCustomers;
-        if (el('statNewCustomers')) el('statNewCustomers').textContent = d.newThisMonth;
-        if (el('statReturningRate')) el('statReturningRate').textContent = d.returningRate + '%';
-        if (el('statAvgLTV')) el('statAvgLTV').textContent = '₪' + d.avgLTV.toLocaleString();
+        // Calculate stats from the filtered data
+        const totalCustomers = data.stats?.totalCustomers || customers.length;
+        const newCustomers = customers.filter(c => {
+          // If this is a new customer in the period
+          return c.orderCount === 1;
+        }).length;
+        const returningCustomers = customers.filter(c => c.orderCount > 1).length;
+        const returningRate = totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0;
+        const totalSpend = customers.reduce((sum, c) => sum + (c.totalSpend || 0), 0);
+        const avgLTV = totalCustomers > 0 ? Math.round(totalSpend / totalCustomers) : 0;
+
+        if (el('statTotalCustomers')) el('statTotalCustomers').textContent = totalCustomers;
+        if (el('statNewCustomers')) el('statNewCustomers').textContent = newCustomers;
+        if (el('statReturningRate')) el('statReturningRate').textContent = returningRate + '%';
+        if (el('statAvgLTV')) el('statAvgLTV').textContent = '₪' + avgLTV.toLocaleString();
       }
     } catch (e) {
       console.error('Customer stats error:', e);
@@ -1030,9 +1053,10 @@ document.addEventListener('DOMContentLoaded', function() {
     tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
 
     try {
-      let url = API_BASE + '/api/shopify/analytics/top-customers?limit=20&period=' + period;
+      let url = API_BASE + '/api/shopify/analytics/top-customers?limit=100&period=' + period;
       if (search) url += '&search=' + encodeURIComponent(search);
 
+      console.log('Loading customers with period:', period);
       const response = await fetch(url);
       const data = await response.json();
 
@@ -1042,25 +1066,113 @@ document.addEventListener('DOMContentLoaded', function() {
       }
 
       if (data.success && data.data.length > 0) {
-        tbody.innerHTML = data.data.map((c, i) => `
-          <tr>
-            <td>
-              <span style="color: ${i < 3 ? 'var(--accent)' : 'var(--text)'}; font-weight: ${i < 3 ? '600' : '400'}">
-                ${i < 3 ? '👑 ' : ''}${c.name}
-              </span>
-            </td>
-            <td style="font-size: 0.8rem; color: var(--text-muted)">${c.email || '-'}</td>
-            <td>${c.orderCount}</td>
-            <td><strong style="color: var(--accent)">₪${c.totalSpend.toLocaleString()}</strong></td>
-            <td style="font-size: 0.85rem">${c.lastOrderDate}</td>
-          </tr>
-        `).join('');
+        customersData = data.data;
+        renderCustomersTable();
       } else {
+        customersData = [];
         tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין נתונים לתקופה זו</td></tr>';
       }
     } catch (e) {
       console.error('Top customers error:', e);
       tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--error);">שגיאה בטעינה</td></tr>';
+    }
+  }
+
+  function sortCustomers(column) {
+    if (customersSortColumn === column) {
+      customersSortAsc = !customersSortAsc;
+    } else {
+      customersSortColumn = column;
+      customersSortAsc = false; // default high to low
+    }
+    renderCustomersTable();
+    updateSortIndicators();
+  }
+
+  function updateSortIndicators() {
+    const headers = document.querySelectorAll('#topCustomersTable th[data-sort]');
+    headers.forEach(th => {
+      const arrow = th.querySelector('.sort-arrow');
+      if (th.dataset.sort === customersSortColumn) {
+        if (arrow) arrow.textContent = customersSortAsc ? ' ▲' : ' ▼';
+      } else {
+        if (arrow) arrow.textContent = ' ⇅';
+      }
+    });
+  }
+
+  function renderCustomersTable() {
+    const tbody = document.getElementById('topCustomersBody');
+    if (!tbody || customersData.length === 0) return;
+
+    // Sort data
+    const sorted = [...customersData].sort((a, b) => {
+      let aVal, bVal;
+
+      switch (customersSortColumn) {
+        case 'name':
+          aVal = a.name || '';
+          bVal = b.name || '';
+          return customersSortAsc ? aVal.localeCompare(bVal, 'he') : bVal.localeCompare(aVal, 'he');
+        case 'email':
+          aVal = a.email || '';
+          bVal = b.email || '';
+          return customersSortAsc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        case 'orderCount':
+          aVal = a.orderCount || 0;
+          bVal = b.orderCount || 0;
+          break;
+        case 'totalSpend':
+          aVal = a.totalSpend || 0;
+          bVal = b.totalSpend || 0;
+          break;
+        case 'lastOrderDate':
+          aVal = new Date(a.lastOrderDateRaw || a.lastOrderDate || 0).getTime();
+          bVal = new Date(b.lastOrderDateRaw || b.lastOrderDate || 0).getTime();
+          break;
+        default:
+          return 0;
+      }
+
+      if (typeof aVal === 'number') {
+        return customersSortAsc ? aVal - bVal : bVal - aVal;
+      }
+      return 0;
+    });
+
+    tbody.innerHTML = sorted.map((c, i) => `
+      <tr>
+        <td>
+          <span style="color: ${i < 3 ? 'var(--accent)' : 'var(--text)'}; font-weight: ${i < 3 ? '600' : '400'}">
+            ${i < 3 ? '👑 ' : ''}${c.name}
+          </span>
+        </td>
+        <td style="font-size: 0.8rem; color: var(--text-muted)">${c.email || '-'}</td>
+        <td>${c.orderCount}</td>
+        <td><strong style="color: var(--accent)">₪${c.totalSpend.toLocaleString()}</strong></td>
+        <td style="font-size: 0.85rem">${c.lastOrderDate}</td>
+      </tr>
+    `).join('');
+  }
+
+  function setupCustomersSorting() {
+    const table = document.getElementById('topCustomersTable');
+    if (!table) return;
+
+    // Update headers to be sortable
+    const thead = table.querySelector('thead tr');
+    if (thead) {
+      thead.innerHTML = `
+        <th data-sort="name" style="cursor: pointer;">לקוח<span class="sort-arrow"> ⇅</span></th>
+        <th data-sort="email" style="cursor: pointer;">אימייל<span class="sort-arrow"> ⇅</span></th>
+        <th data-sort="orderCount" style="cursor: pointer;">הזמנות<span class="sort-arrow"> ⇅</span></th>
+        <th data-sort="totalSpend" style="cursor: pointer;">סה"כ קניות<span class="sort-arrow"> ▼</span></th>
+        <th data-sort="lastOrderDate" style="cursor: pointer;">הזמנה אחרונה<span class="sort-arrow"> ⇅</span></th>
+      `;
+
+      thead.querySelectorAll('th[data-sort]').forEach(th => {
+        th.onclick = () => sortCustomers(th.dataset.sort);
+      });
     }
   }
 
@@ -1078,11 +1190,21 @@ document.addEventListener('DOMContentLoaded', function() {
 
       newBtn.addEventListener('click', function(e) {
         e.preventDefault();
-        console.log('Customer period clicked:', this.dataset.period);
+        e.stopPropagation();
+
+        const period = this.dataset.period;
+        console.log('Customer period clicked:', period);
+
+        // Update active state immediately
         selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
-        customersPeriod = this.dataset.period;
-        loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
+
+        // Update global state
+        customersPeriod = period;
+
+        // Reload BOTH stats and table with new period
+        loadCustomerStatsFiltered(period);
+        loadTopCustomersFiltered(period, customersSearchTerm);
       });
     });
 
@@ -1281,26 +1403,29 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('Setting up', periodBtns.length, 'product period buttons');
 
     periodBtns.forEach(btn => {
-      // Remove existing listeners by cloning
-      const newBtn = btn.cloneNode(true);
-      btn.parentNode.replaceChild(newBtn, btn);
+      // Use direct event listener
+      btn.onclick = null;
 
-      newBtn.addEventListener('click', function(e) {
+      btn.addEventListener('click', function(e) {
         e.preventDefault();
-        console.log('Product period clicked:', this.dataset.period);
+        e.stopPropagation();
+
+        const period = this.dataset.period;
+        console.log('Product period clicked:', period);
+
+        // Update active state immediately
         selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
-        productsPeriod = this.dataset.period;
+
+        productsPeriod = period;
         loadTopProductsFiltered(productsPeriod, productsSearchTerm);
       });
     });
 
     const customBtn = document.getElementById('productsCustomDateBtn');
     if (customBtn) {
-      const newCustomBtn = customBtn.cloneNode(true);
-      customBtn.parentNode.replaceChild(newCustomBtn, customBtn);
-
-      newCustomBtn.addEventListener('click', function(e) {
+      customBtn.onclick = null;
+      customBtn.addEventListener('click', function(e) {
         e.preventDefault();
         const startDate = document.getElementById('productsStartDate').value;
         const endDate = document.getElementById('productsEndDate').value;
@@ -1383,73 +1508,82 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
-  // COUPONS WITH TRACKING
+  // COUPONS - SEARCH-BASED SYSTEM
   // ==========================================
 
   // Load tracked coupons from localStorage
   let trackedCoupons = JSON.parse(localStorage.getItem('trackedCoupons') || '[]');
-  let allCoupons = [];
+  let lastSearchedCoupon = null;
 
   function saveTrackedCoupons() {
     localStorage.setItem('trackedCoupons', JSON.stringify(trackedCoupons));
   }
 
-  function isTracked(couponId) {
-    return trackedCoupons.some(c => c.id === couponId || c.id == couponId);
+  function isTracked(couponCode) {
+    return trackedCoupons.some(c => c.code.toUpperCase() === couponCode.toUpperCase());
   }
 
-  function toggleTrackCoupon(coupon) {
-    if (isTracked(coupon.id)) {
-      trackedCoupons = trackedCoupons.filter(c => c.id !== coupon.id);
-    } else {
+  function addToTracked(coupon) {
+    if (!isTracked(coupon.code)) {
       trackedCoupons.push({
         id: coupon.id,
-        code: coupon.code || coupon.title,
+        code: coupon.code,
         value: coupon.value,
         valueType: coupon.valueType,
-        usageCount: coupon.usageCount || 0
+        usageCount: coupon.usageCount || 0,
+        isActive: coupon.isActive,
+        startsAt: coupon.startsAt,
+        endsAt: coupon.endsAt
       });
+      saveTrackedCoupons();
+      renderTrackedCoupons();
     }
-    saveTrackedCoupons();
-    renderTrackedCoupons();
-    renderCouponsList(document.getElementById('couponSearch')?.value || '');
   }
 
-  function removeTrackedCoupon(couponId) {
-    trackedCoupons = trackedCoupons.filter(c => c.id != couponId);
+  function removeTrackedCoupon(couponCode) {
+    trackedCoupons = trackedCoupons.filter(c => c.code.toUpperCase() !== couponCode.toUpperCase());
     saveTrackedCoupons();
     renderTrackedCoupons();
-    renderCouponsList(document.getElementById('couponSearch')?.value || '');
+  }
+
+  function formatDiscount(value, valueType) {
+    if (!value) return '-';
+    if (valueType === 'percentage') return Math.abs(parseFloat(value)) + '%';
+    return '₪' + Math.abs(parseFloat(value));
+  }
+
+  function formatDate(dateStr) {
+    if (!dateStr) return '-';
+    const d = new Date(dateStr);
+    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
   }
 
   function renderTrackedCoupons() {
     const container = document.getElementById('trackedCouponsList');
     if (!container) return;
 
-    // Update tracked coupons with latest data from allCoupons
-    trackedCoupons = trackedCoupons.map(tc => {
-      const latest = allCoupons.find(c => c.id === tc.id || c.code === tc.code);
-      return latest ? { ...tc, usageCount: latest.usageCount || 0 } : tc;
-    });
-    saveTrackedCoupons();
-
     if (trackedCoupons.length === 0) {
-      container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">לחץ על ⭐ כדי להוסיף קופונים למעקב</p>';
+      container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">חפש קופון והוסף אותו למעקב</p>';
       return;
     }
 
     container.innerHTML = `
       <table class="data-table">
-        <thead><tr><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th><th></th></tr></thead>
+        <thead><tr><th>קוד</th><th>הנחה</th><th>שימושים</th><th>סטטוס</th><th></th></tr></thead>
         <tbody>
           ${trackedCoupons.map(c => `
             <tr>
-              <td><strong>⭐ ${c.code || c.title}</strong></td>
+              <td><strong>${c.code}</strong></td>
               <td>${formatDiscount(c.value, c.valueType)}</td>
               <td>${c.usageCount || 0}</td>
               <td>
-                <button class="btn-remove-coupon" data-id="${c.id}" title="הסר ממעקב"
-                  style="background: none; border: none; color: var(--error); cursor: pointer; font-size: 1.2rem;">
+                <span class="order-status ${c.isActive ? 'paid' : 'pending'}">
+                  ${c.isActive ? 'פעיל' : 'לא פעיל'}
+                </span>
+              </td>
+              <td>
+                <button class="btn-remove-coupon" data-code="${c.code}" title="הסר ממעקב"
+                  style="background: none; border: none; color: var(--error); cursor: pointer; font-size: 1rem;">
                   ✕
                 </button>
               </td>
@@ -1461,141 +1595,142 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Add remove button handlers
     container.querySelectorAll('.btn-remove-coupon').forEach(btn => {
-      btn.onclick = () => removeTrackedCoupon(btn.dataset.id);
+      btn.onclick = () => removeTrackedCoupon(btn.dataset.code);
     });
   }
 
-  function formatDiscount(value, valueType) {
-    if (!value) return '-';
-    if (valueType === 'percentage') return value + '%';
-    return '₪' + Math.abs(parseFloat(value));
-  }
-
-  function renderCouponsList(searchTerm = '') {
-    const container = document.getElementById('couponsList');
+  function renderCouponSearchResult(coupon) {
+    const container = document.getElementById('couponSearchResult');
     if (!container) return;
 
-    let filtered = allCoupons;
-    if (searchTerm.trim()) {
-      const term = searchTerm.toLowerCase();
-      filtered = allCoupons.filter(c => (c.code || c.title || '').toLowerCase().includes(term));
-    }
-
-    if (filtered.length === 0) {
-      container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">לא נמצאו קופונים</p>';
+    if (!coupon) {
+      container.innerHTML = '';
       return;
     }
 
+    const tracked = isTracked(coupon.code);
+
     container.innerHTML = `
-      <table class="data-table">
-        <thead><tr><th></th><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th><th>סטטוס</th></tr></thead>
-        <tbody>
-          ${filtered.map(d => `
-            <tr>
-              <td>
-                <button class="btn-track-coupon" data-id="${d.id}" title="${isTracked(d.id) ? 'הסר ממעקב' : 'הוסף למעקב'}"
-                  style="background: none; border: none; cursor: pointer; font-size: 1.2rem; color: ${isTracked(d.id) ? '#ffc107' : 'var(--text-muted)'};">
-                  ${isTracked(d.id) ? '⭐' : '☆'}
-                </button>
-              </td>
-              <td><strong>${d.code || d.title}</strong></td>
-              <td>${formatDiscount(d.value, d.valueType)}</td>
-              <td>${d.usageCount || 0}</td>
-              <td>
-                <span class="order-status ${d.isActive ? 'paid' : 'pending'}">
-                  ${d.isActive ? 'פעיל' : 'לא פעיל'}
-                </span>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `;
+      <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 15px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+          <h3 style="margin: 0; color: var(--accent);">${coupon.code}</h3>
+          <span class="order-status ${coupon.isActive ? 'paid' : 'pending'}" style="font-size: 0.9rem;">
+            ${coupon.isActive ? '✓ פעיל' : '✗ לא פעיל'}
+          </span>
+        </div>
 
-    // Add track button handlers
-    container.querySelectorAll('.btn-track-coupon').forEach(btn => {
-      btn.onclick = () => {
-        const couponId = btn.dataset.id;
-        const coupon = allCoupons.find(c => c.id == couponId);
-        if (coupon) toggleTrackCoupon(coupon);
-      };
-    });
-  }
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">הנחה</div>
+            <div style="font-size: 1.3rem; font-weight: 600; color: var(--accent);">${formatDiscount(coupon.value, coupon.valueType)}</div>
+          </div>
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">שימושים</div>
+            <div style="font-size: 1.3rem; font-weight: 600;">${coupon.usageCount || 0}${coupon.usageLimit ? ' / ' + coupon.usageLimit : ''}</div>
+          </div>
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">תאריך התחלה</div>
+            <div>${formatDate(coupon.startsAt)}</div>
+          </div>
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">תאריך סיום</div>
+            <div>${formatDate(coupon.endsAt)}</div>
+          </div>
+          ${coupon.minimumAmount ? `
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">מינימום הזמנה</div>
+            <div>₪${coupon.minimumAmount}</div>
+          </div>` : ''}
+          <div>
+            <div style="color: var(--text-muted); font-size: 0.8rem;">פעם אחת ללקוח</div>
+            <div>${coupon.oncePerCustomer ? 'כן' : 'לא'}</div>
+          </div>
+        </div>
 
-  async function loadCoupons() {
-    const container = document.getElementById('couponsList');
-    if (!container) return;
-
-    // Render tracked coupons first (from localStorage)
-    renderTrackedCoupons();
-
-    // Show loading state
-    container.innerHTML = `
-      <div class="loading">
-        <div class="spinner"></div>
-        <p>טוען קופונים...</p>
+        <button id="btnAddToTracked" class="btn ${tracked ? 'btn-secondary' : 'btn-primary'}" style="margin-top: 20px; width: 100%;">
+          ${tracked ? '✓ במעקב' : '⭐ הוסף למעקב'}
+        </button>
       </div>
     `;
 
+    // Add track button handler
+    const addBtn = document.getElementById('btnAddToTracked');
+    if (addBtn && !tracked) {
+      addBtn.onclick = () => {
+        addToTracked(coupon);
+        renderCouponSearchResult(coupon);
+      };
+    }
+  }
+
+  async function searchCoupon(code) {
+    const resultContainer = document.getElementById('couponSearchResult');
+    const searchBtn = document.getElementById('couponSearchBtn');
+
+    if (!code || code.trim().length === 0) {
+      if (resultContainer) resultContainer.innerHTML = '<p style="color: var(--error); text-align: center; margin-top: 15px;">נא להזין קוד קופון</p>';
+      return;
+    }
+
+    // Show loading
+    if (searchBtn) {
+      searchBtn.disabled = true;
+      searchBtn.textContent = '🔍 מחפש...';
+    }
+    if (resultContainer) {
+      resultContainer.innerHTML = '<div class="loading" style="padding: 20px;"><div class="spinner"></div><p>מחפש קופון...</p></div>';
+    }
+
     try {
-      console.log('Fetching coupons from API...');
-
-      // Create abort controller for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-
-      const response = await fetch(API_BASE + '/api/shopify/discounts', {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
+      const response = await fetch(API_BASE + '/api/shopify/discounts/search?code=' + encodeURIComponent(code.trim()));
       const data = await response.json();
-      console.log('Coupons API response:', data);
 
-      if (data.success) {
-        allCoupons = data.data || [];
-        console.log(`Loaded ${allCoupons.length} coupons${data.cached ? ' (from cache)' : ''}`);
-
-        if (allCoupons.length === 0) {
-          container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין קופונים פעילים</p>';
-          return;
-        }
-
-        // Update tracked coupons with latest data
-        renderTrackedCoupons();
-        renderCouponsList();
-
-        // Setup search handler
-        const searchInput = document.getElementById('couponSearch');
-        if (searchInput) {
-          searchInput.oninput = function() {
-            renderCouponsList(this.value);
-          };
-        }
+      if (data.success && data.data) {
+        lastSearchedCoupon = data.data;
+        renderCouponSearchResult(data.data);
       } else {
-        console.error('Coupons API error:', data.message);
-        container.innerHTML = `
-          <div style="text-align: center; padding: 20px;">
-            <p style="color: var(--error);">שגיאה בטעינת קופונים</p>
-            <p style="color: var(--text-muted); font-size: 0.85rem;">${data.message || 'Unknown error'}</p>
-            <button onclick="loadCoupons()" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer;">נסה שוב</button>
-          </div>
-        `;
+        if (resultContainer) {
+          resultContainer.innerHTML = `<p style="color: var(--error); text-align: center; margin-top: 15px;">${data.message || 'לא נמצא קופון'}</p>`;
+        }
       }
     } catch (e) {
-      console.error('Coupons fetch error:', e);
-      const errorMessage = e.name === 'AbortError' ? 'הבקשה נכשלה - timeout' : e.message;
-      container.innerHTML = `
-        <div style="text-align: center; padding: 20px;">
-          <p style="color: var(--error);">שגיאה בטעינת קופונים</p>
-          <p style="color: var(--text-muted); font-size: 0.85rem;">${errorMessage}</p>
-          <button onclick="loadCoupons()" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer;">נסה שוב</button>
-        </div>
-      `;
+      console.error('Coupon search error:', e);
+      if (resultContainer) {
+        resultContainer.innerHTML = '<p style="color: var(--error); text-align: center; margin-top: 15px;">שגיאה בחיפוש</p>';
+      }
+    }
+
+    if (searchBtn) {
+      searchBtn.disabled = false;
+      searchBtn.textContent = '🔍 חפש';
+    }
+  }
+
+  function loadCoupons() {
+    // Just render tracked coupons and setup search
+    renderTrackedCoupons();
+
+    const searchInput = document.getElementById('couponSearch');
+    const searchBtn = document.getElementById('couponSearchBtn');
+    const resultContainer = document.getElementById('couponSearchResult');
+
+    // Show initial message
+    if (resultContainer) {
+      resultContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center; margin-top: 15px;">הזן קוד קופון למעלה ולחץ חפש</p>';
+    }
+
+    // Setup search button
+    if (searchBtn) {
+      searchBtn.onclick = () => {
+        if (searchInput) searchCoupon(searchInput.value);
+      };
+    }
+
+    // Setup enter key
+    if (searchInput) {
+      searchInput.onkeydown = (e) => {
+        if (e.key === 'Enter') searchCoupon(searchInput.value);
+      };
     }
   }
 
