@@ -1,10 +1,11 @@
 /**
  * Stats Preloader Service
  * Pre-calculates and caches stats on server start
+ * Uses REST API instead of GraphQL (REST works reliably with date filters)
  * Refreshes every 10 minutes
  */
 
-const shopifyGraphQL = require('./shopify-graphql');
+const shopifyRest = require('./shopify-rest');
 const { cache, TTL } = require('./cache');
 
 class StatsPreloader {
@@ -68,7 +69,15 @@ class StatsPreloader {
   }
 
   /**
-   * Pre-load stats for all common periods
+   * Format date for display (DD/MM/YYYY Israeli format)
+   */
+  formatDateDisplay(date) {
+    const d = new Date(date);
+    return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+  }
+
+  /**
+   * Pre-load stats for all common periods using REST API
    */
   async preloadAll() {
     if (this.isLoading) {
@@ -79,7 +88,7 @@ class StatsPreloader {
     this.isLoading = true;
     const startTime = Date.now();
     console.log('[StatsPreloader] ========================================');
-    console.log('[StatsPreloader] Starting preload of all stats...');
+    console.log('[StatsPreloader] Starting preload using REST API...');
 
     // Check environment first
     if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
@@ -95,31 +104,55 @@ class StatsPreloader {
     let errorCount = 0;
 
     try {
-      // Load stats for common periods in parallel
+      // Load stats for common periods
       const periods = ['today', 'week', 'month', 'lastMonth', 'year'];
 
-      console.log('[StatsPreloader] Loading period stats...');
-      await Promise.all(periods.map(async (period) => {
+      console.log('[StatsPreloader] Loading period stats via REST API...');
+
+      for (const period of periods) {
         try {
           const { start, end } = this.getDateRange(period);
-          this.stats[period] = await shopifyGraphQL.getStats(start, end);
-          const sales = this.stats[period].totalSales || 0;
-          const orders = this.stats[period].orderCount || 0;
-          console.log(`[StatsPreloader] ${period}: ₪${sales.toLocaleString()}, ${orders} orders`);
+          console.log(`[StatsPreloader] Fetching ${period} (${this.formatDateDisplay(start)} - ${this.formatDateDisplay(end)})...`);
+
+          // Use REST API to get orders
+          const orders = await shopifyRest.getOrders(start, end);
+          const stats = shopifyRest.calculateStats(orders);
+
+          // Add period info
+          this.stats[period] = {
+            ...stats,
+            period: {
+              start: this.formatDateDisplay(start),
+              end: this.formatDateDisplay(end)
+            },
+            fetchedAt: new Date().toISOString()
+          };
+
+          console.log(`[StatsPreloader] ${period}: ₪${stats.totalSales.toLocaleString()}, ${stats.orderCount} orders`);
           loadedCount++;
         } catch (error) {
           console.error(`[StatsPreloader] Error loading ${period}:`, error.message);
           errorCount++;
         }
-      }));
+      }
 
       // Load month daily sales for chart
       try {
         console.log('[StatsPreloader] Loading daily sales for chart...');
         const { start: monthStart, end: monthEnd } = this.getDateRange('month');
-        const dailySalesData = await shopifyGraphQL.getDailySales(monthStart, monthEnd);
-        this.stats.dailySales.month = dailySalesData;
-        console.log(`[StatsPreloader] Daily sales: ${dailySalesData.data?.length || 0} days loaded`);
+        const orders = await shopifyRest.getOrders(monthStart, monthEnd);
+        const dailySales = shopifyRest.getDailySales(orders, monthStart, monthEnd);
+
+        this.stats.dailySales.month = {
+          data: dailySales,
+          period: {
+            start: this.formatDateDisplay(monthStart),
+            end: this.formatDateDisplay(monthEnd)
+          },
+          fetchedAt: new Date().toISOString()
+        };
+
+        console.log(`[StatsPreloader] Daily sales: ${dailySales.length} days loaded`);
         loadedCount++;
       } catch (error) {
         console.error('[StatsPreloader] Error loading daily sales:', error.message);
@@ -130,21 +163,41 @@ class StatsPreloader {
       try {
         console.log('[StatsPreloader] Loading top products...');
         const { start: monthStart, end: monthEnd } = this.getDateRange('month');
-        this.stats.topProducts = await shopifyGraphQL.getTopProducts(monthStart, monthEnd, 20);
-        console.log(`[StatsPreloader] Top products: ${this.stats.topProducts?.products?.length || 0} products`);
+        const orders = await shopifyRest.getOrders(monthStart, monthEnd);
+        const topProducts = shopifyRest.getTopProducts(orders, 20);
+
+        this.stats.topProducts = {
+          products: topProducts,
+          byRevenue: topProducts,
+          total: topProducts.length,
+          period: {
+            start: this.formatDateDisplay(monthStart),
+            end: this.formatDateDisplay(monthEnd)
+          },
+          fetchedAt: new Date().toISOString()
+        };
+
+        console.log(`[StatsPreloader] Top products: ${topProducts.length} products`);
         loadedCount++;
       } catch (error) {
         console.error('[StatsPreloader] Error loading top products:', error.message);
         errorCount++;
       }
 
-      // Load top customers (all time, sorted by spend)
+      // Load top customers from year's orders
       try {
         console.log('[StatsPreloader] Loading top customers...');
-        const yearAgo = new Date();
-        yearAgo.setFullYear(yearAgo.getFullYear() - 1);
-        this.stats.topCustomers = await shopifyGraphQL.getCustomers(yearAgo, new Date());
-        console.log(`[StatsPreloader] Customers: ${this.stats.topCustomers?.customers?.length || 0} customers`);
+        const { start: yearStart, end: yearEnd } = this.getDateRange('year');
+        const orders = await shopifyRest.getOrders(yearStart, yearEnd);
+        const topCustomers = shopifyRest.getTopCustomers(orders, 20);
+
+        this.stats.topCustomers = {
+          customers: topCustomers,
+          total: topCustomers.length,
+          fetchedAt: new Date().toISOString()
+        };
+
+        console.log(`[StatsPreloader] Top customers: ${topCustomers.length} customers`);
         loadedCount++;
       } catch (error) {
         console.error('[StatsPreloader] Error loading customers:', error.message);
@@ -219,6 +272,10 @@ class StatsPreloader {
       isReady: this.isReady(),
       lastLoadTime: this.lastLoadTime?.toISOString() || null,
       periodsLoaded: Object.keys(this.stats).filter(k => this.stats[k] !== null).length,
+      monthStats: this.stats.month ? {
+        totalSales: this.stats.month.totalSales,
+        orderCount: this.stats.month.orderCount
+      } : null,
       cacheStats: cache.getStats()
     };
   }
@@ -257,7 +314,7 @@ class StatsPreloader {
    * Initialize on server start
    */
   async initialize() {
-    console.log('[StatsPreloader] Initializing...');
+    console.log('[StatsPreloader] Initializing with REST API...');
 
     // Clear all caches to ensure fresh data
     console.log('[StatsPreloader] Clearing all caches...');
@@ -276,12 +333,8 @@ class StatsPreloader {
    * Force refresh all stats
    */
   async refresh() {
-    // Clear cache for stats
-    cache.clearPattern('shopify_stats');
-    cache.clearPattern('shopify_orders');
-    cache.clearPattern('shopify_daily_sales');
-    cache.clearPattern('shopify_top_products');
-    cache.clearPattern('shopify_customers');
+    // Clear all shopify caches
+    cache.clearPattern('shopify');
 
     // Reload
     await this.preloadAll();

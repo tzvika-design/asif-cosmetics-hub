@@ -1,12 +1,13 @@
 /**
  * Shopify Analytics API Routes
- * Fast endpoints using GraphQL service and pre-cached data
+ * Uses REST API for reliable data fetching (GraphQL date filters are buggy)
  */
 
 const express = require('express');
 const router = express.Router();
 
-// Import new services
+// Import services - REST API is the primary data source now
+const shopifyRest = require('../services/shopify-rest');
 const shopifyGraphQL = require('../services/shopify-graphql');
 const statsPreloader = require('../services/stats-preloader');
 const { cache, TTL } = require('../services/cache');
@@ -1462,6 +1463,152 @@ router.get('/compare-apis', async (req, res) => {
   }
 
   res.json(result);
+});
+
+// ==========================================
+// REST API STATS ENDPOINTS (THE FIX!)
+// These use REST API which works reliably
+// ==========================================
+
+/**
+ * GET /api/shopify/stats/today
+ * Get today's stats using REST API
+ */
+router.get('/stats/today', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersToday();
+    const stats = shopifyRest.calculateStats(orders);
+
+    res.json({
+      success: true,
+      period: 'today',
+      ...stats,
+      orders: orders.slice(0, 5).map(o => ({
+        name: o.name,
+        total: o.total_price,
+        customer: o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : 'Guest'
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/week
+ * Get this week's stats using REST API
+ */
+router.get('/stats/week', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersThisWeek();
+    const stats = shopifyRest.calculateStats(orders);
+
+    res.json({
+      success: true,
+      period: 'week',
+      ...stats
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/month
+ * Get this month's stats using REST API
+ */
+router.get('/stats/month', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersThisMonth();
+    const stats = shopifyRest.calculateStats(orders);
+
+    // Get daily breakdown for chart
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const dailySales = shopifyRest.getDailySales(orders, startOfMonth, now);
+
+    res.json({
+      success: true,
+      period: 'month',
+      ...stats,
+      dailySales
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/year
+ * Get this year's stats using REST API
+ */
+router.get('/stats/year', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersThisYear();
+    const stats = shopifyRest.calculateStats(orders);
+
+    // Get top products
+    const topProducts = shopifyRest.getTopProducts(orders, 10);
+
+    res.json({
+      success: true,
+      period: 'year',
+      ...stats,
+      topProducts
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/all
+ * Get all stats in one call - for dashboard
+ */
+router.get('/stats/all', async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    // Get preloaded stats (fastest)
+    const todayStats = statsPreloader.getStats('today');
+    const weekStats = statsPreloader.getStats('week');
+    const monthStats = statsPreloader.getStats('month');
+    const yearStats = statsPreloader.getStats('year');
+
+    // If not preloaded, fetch fresh
+    if (!monthStats) {
+      console.log('[API] Stats not preloaded, fetching fresh...');
+
+      const [todayOrders, weekOrders, monthOrders] = await Promise.all([
+        shopifyRest.getOrdersToday(),
+        shopifyRest.getOrdersThisWeek(),
+        shopifyRest.getOrdersThisMonth()
+      ]);
+
+      const result = {
+        success: true,
+        source: 'fresh',
+        today: shopifyRest.calculateStats(todayOrders),
+        week: shopifyRest.calculateStats(weekOrders),
+        month: shopifyRest.calculateStats(monthOrders),
+        responseTime: Date.now() - startTime
+      };
+
+      return res.json(result);
+    }
+
+    res.json({
+      success: true,
+      source: 'preloaded',
+      today: todayStats,
+      week: weekStats,
+      month: monthStats,
+      year: yearStats,
+      responseTime: Date.now() - startTime
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 module.exports = router;
