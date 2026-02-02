@@ -22,7 +22,11 @@ class ShopifyGraphQL {
    */
   initialize() {
     if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
-      throw new Error('Shopify credentials not configured');
+      const missing = [];
+      if (!process.env.SHOPIFY_STORE_URL) missing.push('SHOPIFY_STORE_URL');
+      if (!process.env.SHOPIFY_ACCESS_TOKEN) missing.push('SHOPIFY_ACCESS_TOKEN');
+      console.error(`[ShopifyGraphQL] Missing environment variables: ${missing.join(', ')}`);
+      throw new Error(`Shopify credentials not configured. Missing: ${missing.join(', ')}`);
     }
 
     const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
@@ -33,7 +37,9 @@ class ShopifyGraphQL {
     };
     this.initialized = true;
 
-    console.log('[ShopifyGraphQL] Initialized');
+    console.log(`[ShopifyGraphQL] Initialized for store: ${process.env.SHOPIFY_STORE_URL}`);
+    console.log(`[ShopifyGraphQL] API Version: ${apiVersion}`);
+    console.log(`[ShopifyGraphQL] Endpoint: ${this.baseUrl}`);
   }
 
   /**

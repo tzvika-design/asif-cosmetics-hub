@@ -263,29 +263,53 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  async function loadKPICards(period) {
+  async function loadKPICards(period, retryCount = 0) {
     try {
       const response = await fetch(`${API_BASE}/api/shopify/analytics/summary?period=${period}`);
       const data = await response.json();
 
       if (data.success) {
         const d = data.data;
-        updateElement('kpiTodaySales', '₪' + Math.round(d.totalSales || 0).toLocaleString());
-        updateElement('kpiTodayOrders', (d.orderCount || 0) + ' הזמנות');
-        updateElement('kpiTodayOrderCount', d.orderCount || 0);
-        updateElement('kpiAvgOrder', '₪' + Math.round(d.avgOrderValue || 0).toLocaleString());
-        updateElement('kpiReturningRate', (d.returningRate || 0) + '%');
+        const totalSales = Math.round(d.totalSales || 0);
+        const orderCount = d.orderCount || 0;
+        const avgOrder = Math.round(d.avgOrderValue || 0);
+        const returningRate = d.returningRate || 0;
+
+        updateElement('kpiTodaySales', '₪' + totalSales.toLocaleString());
+        updateElement('kpiTodayOrders', orderCount + ' הזמנות');
+        updateElement('kpiTodayOrderCount', orderCount);
+        updateElement('kpiAvgOrder', '₪' + avgOrder.toLocaleString());
+        updateElement('kpiReturningRate', returningRate + '%');
 
         // Update period label
         if (d.period) {
           updateElement('chartPeriodLabel', `${d.period.start} - ${d.period.end}`);
         }
 
-        console.log(`[KPI] Loaded (${data.responseTime}ms, cached: ${data.cached})`);
+        // Log detailed info for debugging
+        console.log(`[KPI] Loaded: ₪${totalSales}, ${orderCount} orders, avg ₪${avgOrder} (${data.responseTime}ms, cached: ${data.cached})`);
+
+        // Show warning if all values are 0
+        if (totalSales === 0 && orderCount === 0) {
+          console.warn('[KPI] All values are 0 - check /api/shopify/debug for diagnostics');
+        }
+      } else {
+        throw new Error(data.message || 'API returned error');
       }
     } catch (error) {
       console.error('[KPI] Error:', error);
+
+      // Retry once after 2 seconds
+      if (retryCount < 1) {
+        console.log('[KPI] Retrying in 2 seconds...');
+        setTimeout(() => loadKPICards(period, retryCount + 1), 2000);
+        return;
+      }
+
       updateElement('kpiTodaySales', 'שגיאה');
+      updateElement('kpiTodayOrders', '-');
+      updateElement('kpiAvgOrder', '-');
+      updateElement('kpiReturningRate', '-');
     }
   }
 
@@ -1041,24 +1065,51 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function loadQuickStats() {
     try {
-      const [weekResponse, monthResponse] = await Promise.all([
+      const [weekResponse, monthResponse, todayResponse] = await Promise.all([
         fetch(`${API_BASE}/api/shopify/analytics/summary?period=week`),
-        fetch(`${API_BASE}/api/shopify/analytics/summary?period=month`)
+        fetch(`${API_BASE}/api/shopify/analytics/summary?period=month`),
+        fetch(`${API_BASE}/api/shopify/analytics/summary?period=today`)
       ]);
 
       const weekData = await weekResponse.json();
       const monthData = await monthResponse.json();
+      const todayData = await todayResponse.json();
 
-      if (monthData.success) {
-        updateElement('statOrdersToday', monthData.data.todayOrders || 0);
-        updateElement('statSalesMonth', '₪' + Math.round(monthData.data.totalSales || 0).toLocaleString());
+      // Today's orders - use today period
+      if (todayData.success) {
+        const todayOrders = todayData.data.orderCount || 0;
+        updateElement('statOrdersToday', todayOrders);
+        console.log(`[QuickStats] Today: ${todayOrders} orders`);
       }
 
+      // Week's orders
       if (weekData.success) {
-        updateElement('statOrdersWeek', weekData.data.orderCount || 0);
+        const weekOrders = weekData.data.orderCount || 0;
+        updateElement('statOrdersWeek', weekOrders);
+        console.log(`[QuickStats] Week: ${weekOrders} orders`);
+      }
+
+      // Month's sales
+      if (monthData.success) {
+        const monthSales = Math.round(monthData.data.totalSales || 0);
+        updateElement('statSalesMonth', '₪' + monthSales.toLocaleString());
+        console.log(`[QuickStats] Month: ₪${monthSales}`);
+      }
+
+      // Debug: Log if all values are 0
+      if (todayData.success && weekData.success && monthData.success) {
+        const allZero = (todayData.data.orderCount === 0 &&
+                        weekData.data.orderCount === 0 &&
+                        monthData.data.totalSales === 0);
+        if (allZero) {
+          console.warn('[QuickStats] All values are 0 - Visit /api/shopify/debug to diagnose');
+        }
       }
     } catch (error) {
       console.error('[QuickStats] Error:', error);
+      updateElement('statOrdersToday', '-');
+      updateElement('statOrdersWeek', '-');
+      updateElement('statSalesMonth', '-');
     }
 
     updateElement('statPostsMonth', state.recentPosts.length);
@@ -1186,6 +1237,100 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
+  // DEBUG / DIAGNOSTICS
+  // ==========================================
+
+  async function runDebugCheck() {
+    const resultsDiv = document.getElementById('debugResults');
+    if (!resultsDiv) return;
+
+    resultsDiv.innerHTML = '<span style="color: var(--accent);">⏳ מריץ בדיקות...</span>';
+
+    try {
+      const response = await fetch(`${API_BASE}/api/shopify/debug`);
+      const data = await response.json();
+
+      let html = '';
+
+      // Environment
+      html += `<div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border);">`;
+      html += `<strong style="color: var(--accent);">🔧 סביבה:</strong><br>`;
+      html += `Shopify URL: ${data.environment?.hasShopifyUrl ? '✅ מוגדר' : '❌ חסר'}<br>`;
+      html += `Access Token: ${data.environment?.hasAccessToken ? '✅ מוגדר' : '❌ חסר'}<br>`;
+      html += `</div>`;
+
+      // Preloader Status
+      html += `<div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border);">`;
+      html += `<strong style="color: var(--accent);">📦 Preloader:</strong><br>`;
+      html += `מוכן: ${data.preloader?.isReady ? '✅' : '❌'}<br>`;
+      html += `טעינה אחרונה: ${data.preloader?.lastLoadTime || 'לא טען'}<br>`;
+      html += `</div>`;
+
+      // Tests
+      html += `<div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border);">`;
+      html += `<strong style="color: var(--accent);">🧪 בדיקות:</strong><br>`;
+
+      if (data.tests?.todayOrders) {
+        const t = data.tests.todayOrders;
+        html += `הזמנות היום: ${t.success ? `✅ ${t.count} הזמנות, ₪${t.totalSales}` : `❌ ${t.error}`}<br>`;
+      }
+
+      if (data.tests?.monthStats) {
+        const t = data.tests.monthStats;
+        html += `סטטיסטיקת חודש: ${t.success ? `✅ ₪${t.totalSales}, ${t.orderCount} הזמנות` : `❌ ${t.error}`}<br>`;
+      }
+
+      if (data.tests?.topProducts) {
+        const t = data.tests.topProducts;
+        html += `מוצרים: ${t.success ? `✅ ${t.count} מוצרים` : `❌ ${t.error}`}<br>`;
+      }
+
+      if (data.tests?.customers) {
+        const t = data.tests.customers;
+        html += `לקוחות: ${t.success ? `✅ ${t.count} לקוחות` : `❌ ${t.error}`}<br>`;
+      }
+      html += `</div>`;
+
+      // Preloaded Data Status
+      if (data.tests?.preloadedData) {
+        html += `<div style="margin-bottom: 15px;">`;
+        html += `<strong style="color: var(--accent);">💾 נתונים טעונים:</strong><br>`;
+        Object.entries(data.tests.preloadedData).forEach(([key, value]) => {
+          const icon = value === 'LOADED' ? '✅' : '❌';
+          html += `${key}: ${icon} ${value}<br>`;
+        });
+        html += `</div>`;
+      }
+
+      // Summary
+      if (data.tests?.preloadedMonthStats) {
+        const s = data.tests.preloadedMonthStats;
+        html += `<div style="background: var(--panel); padding: 10px; border-radius: 6px; margin-top: 10px;">`;
+        html += `<strong style="color: var(--success);">📊 סיכום החודש:</strong><br>`;
+        html += `מכירות: ₪${(s.totalSales || 0).toLocaleString()}<br>`;
+        html += `הזמנות: ${s.orderCount || 0}<br>`;
+        html += `ממוצע: ₪${(s.avgOrderValue || 0).toLocaleString()}<br>`;
+        html += `</div>`;
+      }
+
+      html += `<div style="color: var(--text-muted); font-size: 0.7rem; margin-top: 15px;">`;
+      html += `זמן תגובה: ${data.responseTime}ms`;
+      html += `</div>`;
+
+      resultsDiv.innerHTML = html;
+
+    } catch (error) {
+      resultsDiv.innerHTML = `<span style="color: var(--error);">❌ שגיאה: ${error.message}</span>`;
+    }
+  }
+
+  // Setup debug button
+  const debugBtn = document.getElementById('runDebugBtn');
+  if (debugBtn) {
+    debugBtn.addEventListener('click', runDebugCheck);
+  }
+
+  // ==========================================
   // INITIALIZATION
   // ==========================================
 
@@ -1199,5 +1344,5 @@ document.addEventListener('DOMContentLoaded', function() {
     loadQuickStats();
   }, 30000);
 
-  console.log('[Dashboard] Initialized');
+  console.log('[Dashboard] Initialized - visit /api/shopify/debug for diagnostics');
 });

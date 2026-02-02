@@ -81,6 +81,19 @@ class StatsPreloader {
     console.log('[StatsPreloader] ========================================');
     console.log('[StatsPreloader] Starting preload of all stats...');
 
+    // Check environment first
+    if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+      console.error('[StatsPreloader] ERROR: Shopify credentials not configured!');
+      console.error('[StatsPreloader] Set SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN in environment');
+      this.isLoading = false;
+      return;
+    }
+
+    console.log(`[StatsPreloader] Store: ${process.env.SHOPIFY_STORE_URL}`);
+
+    let loadedCount = 0;
+    let errorCount = 0;
+
     try {
       // Load stats for common periods in parallel
       const periods = ['today', 'week', 'month', 'lastMonth', 'year'];
@@ -90,36 +103,70 @@ class StatsPreloader {
         try {
           const { start, end } = this.getDateRange(period);
           this.stats[period] = await shopifyGraphQL.getStats(start, end);
-          console.log(`[StatsPreloader] ${period}: loaded (₪${this.stats[period].totalSales.toLocaleString()}, ${this.stats[period].orderCount} orders)`);
+          const sales = this.stats[period].totalSales || 0;
+          const orders = this.stats[period].orderCount || 0;
+          console.log(`[StatsPreloader] ${period}: ₪${sales.toLocaleString()}, ${orders} orders`);
+          loadedCount++;
         } catch (error) {
           console.error(`[StatsPreloader] Error loading ${period}:`, error.message);
+          errorCount++;
         }
       }));
 
       // Load month daily sales for chart
-      console.log('[StatsPreloader] Loading daily sales for month...');
-      const { start: monthStart, end: monthEnd } = this.getDateRange('month');
-      const dailySalesData = await shopifyGraphQL.getDailySales(monthStart, monthEnd);
-      this.stats.dailySales.month = dailySalesData;
+      try {
+        console.log('[StatsPreloader] Loading daily sales for chart...');
+        const { start: monthStart, end: monthEnd } = this.getDateRange('month');
+        const dailySalesData = await shopifyGraphQL.getDailySales(monthStart, monthEnd);
+        this.stats.dailySales.month = dailySalesData;
+        console.log(`[StatsPreloader] Daily sales: ${dailySalesData.data?.length || 0} days loaded`);
+        loadedCount++;
+      } catch (error) {
+        console.error('[StatsPreloader] Error loading daily sales:', error.message);
+        errorCount++;
+      }
 
       // Load top products for month
-      console.log('[StatsPreloader] Loading top products...');
-      this.stats.topProducts = await shopifyGraphQL.getTopProducts(monthStart, monthEnd, 20);
+      try {
+        console.log('[StatsPreloader] Loading top products...');
+        const { start: monthStart, end: monthEnd } = this.getDateRange('month');
+        this.stats.topProducts = await shopifyGraphQL.getTopProducts(monthStart, monthEnd, 20);
+        console.log(`[StatsPreloader] Top products: ${this.stats.topProducts?.products?.length || 0} products`);
+        loadedCount++;
+      } catch (error) {
+        console.error('[StatsPreloader] Error loading top products:', error.message);
+        errorCount++;
+      }
 
       // Load top customers (all time, sorted by spend)
-      console.log('[StatsPreloader] Loading top customers...');
-      const yearAgo = new Date();
-      yearAgo.setFullYear(yearAgo.getFullYear() - 1);
-      this.stats.topCustomers = await shopifyGraphQL.getCustomers(yearAgo, new Date());
+      try {
+        console.log('[StatsPreloader] Loading top customers...');
+        const yearAgo = new Date();
+        yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+        this.stats.topCustomers = await shopifyGraphQL.getCustomers(yearAgo, new Date());
+        console.log(`[StatsPreloader] Customers: ${this.stats.topCustomers?.customers?.length || 0} customers`);
+        loadedCount++;
+      } catch (error) {
+        console.error('[StatsPreloader] Error loading customers:', error.message);
+        errorCount++;
+      }
 
       this.lastLoadTime = new Date();
 
       const elapsed = Date.now() - startTime;
+      console.log('[StatsPreloader] ========================================');
       console.log(`[StatsPreloader] Preload complete in ${elapsed}ms`);
+      console.log(`[StatsPreloader] Loaded: ${loadedCount}, Errors: ${errorCount}`);
+
+      // Summary of loaded data
+      if (this.stats.month) {
+        console.log(`[StatsPreloader] Month summary: ₪${this.stats.month.totalSales?.toLocaleString() || 0}, ${this.stats.month.orderCount || 0} orders`);
+      }
       console.log('[StatsPreloader] ========================================');
 
     } catch (error) {
       console.error('[StatsPreloader] Preload error:', error.message);
+      console.error('[StatsPreloader] Stack:', error.stack);
     } finally {
       this.isLoading = false;
     }

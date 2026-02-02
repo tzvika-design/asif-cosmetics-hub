@@ -680,4 +680,142 @@ router.post('/cache/refresh', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/shopify/debug
+ * Diagnostic endpoint - shows raw data from Shopify
+ */
+router.get('/debug', async (req, res) => {
+  const startTime = Date.now();
+  const results = {
+    timestamp: new Date().toISOString(),
+    environment: {
+      hasShopifyUrl: !!process.env.SHOPIFY_STORE_URL,
+      hasAccessToken: !!process.env.SHOPIFY_ACCESS_TOKEN,
+      shopifyUrl: process.env.SHOPIFY_STORE_URL ? `${process.env.SHOPIFY_STORE_URL.substring(0, 10)}...` : 'NOT SET',
+      nodeEnv: process.env.NODE_ENV || 'development'
+    },
+    preloader: statsPreloader.getStatus(),
+    cache: cache.getStats(),
+    tests: {}
+  };
+
+  // Test 1: Try to get today's orders
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const ordersData = await shopifyGraphQL.getOrders(today, new Date());
+    results.tests.todayOrders = {
+      success: true,
+      count: ordersData.orders?.length || 0,
+      totalSales: ordersData.totals?.netSales || 0,
+      sampleOrder: ordersData.orders?.[0] ? {
+        name: ordersData.orders[0].name,
+        total: ordersData.orders[0].totalPriceSet?.shopMoney?.amount
+      } : null
+    };
+  } catch (error) {
+    results.tests.todayOrders = { success: false, error: error.message };
+  }
+
+  // Test 2: Try to get this month's stats
+  try {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const stats = await shopifyGraphQL.getStats(monthStart, new Date());
+    results.tests.monthStats = {
+      success: true,
+      totalSales: stats.totalSales,
+      orderCount: stats.orderCount,
+      avgOrderValue: stats.avgOrderValue,
+      todaySales: stats.todaySales,
+      todayOrders: stats.todayOrders
+    };
+  } catch (error) {
+    results.tests.monthStats = { success: false, error: error.message };
+  }
+
+  // Test 3: Try to get products
+  try {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    const products = await shopifyGraphQL.getTopProducts(monthStart, new Date(), 5);
+    results.tests.topProducts = {
+      success: true,
+      count: products.products?.length || 0,
+      sample: products.byRevenue?.slice(0, 3).map(p => ({ title: p.title, revenue: p.revenue }))
+    };
+  } catch (error) {
+    results.tests.topProducts = { success: false, error: error.message };
+  }
+
+  // Test 4: Try to get customers
+  try {
+    const customers = await shopifyGraphQL.getCustomers(null, null);
+    results.tests.customers = {
+      success: true,
+      count: customers.customers?.length || 0,
+      stats: customers.stats
+    };
+  } catch (error) {
+    results.tests.customers = { success: false, error: error.message };
+  }
+
+  // Test 5: Check preloaded data
+  results.tests.preloadedData = {
+    today: statsPreloader.getStats('today') ? 'LOADED' : 'EMPTY',
+    week: statsPreloader.getStats('week') ? 'LOADED' : 'EMPTY',
+    month: statsPreloader.getStats('month') ? 'LOADED' : 'EMPTY',
+    topProducts: statsPreloader.getTopProducts() ? 'LOADED' : 'EMPTY',
+    topCustomers: statsPreloader.getTopCustomers() ? 'LOADED' : 'EMPTY',
+    dailySales: statsPreloader.getDailySales('month') ? 'LOADED' : 'EMPTY'
+  };
+
+  // Show preloaded month stats if available
+  const monthPreloaded = statsPreloader.getStats('month');
+  if (monthPreloaded) {
+    results.tests.preloadedMonthStats = {
+      totalSales: monthPreloaded.totalSales,
+      orderCount: monthPreloaded.orderCount,
+      avgOrderValue: monthPreloaded.avgOrderValue
+    };
+  }
+
+  results.responseTime = Date.now() - startTime;
+
+  res.json(results);
+});
+
+/**
+ * GET /api/shopify/debug/orders
+ * Get raw orders data for debugging
+ */
+router.get('/debug/orders', async (req, res) => {
+  try {
+    const { days = 7 } = req.query;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - parseInt(days));
+
+    const ordersData = await shopifyGraphQL.getOrders(start, end);
+
+    res.json({
+      success: true,
+      period: { start: formatDateIL(start), end: formatDateIL(end) },
+      totals: ordersData.totals,
+      orderCount: ordersData.orders?.length || 0,
+      orders: ordersData.orders?.slice(0, 20).map(o => ({
+        name: o.name,
+        createdAt: o.createdAt,
+        total: o.totalPriceSet?.shopMoney?.amount,
+        customer: o.customer?.firstName ? `${o.customer.firstName} ${o.customer.lastName}` : 'Guest',
+        items: o.lineItems?.nodes?.length || 0,
+        discounts: o.discountCodes || []
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;

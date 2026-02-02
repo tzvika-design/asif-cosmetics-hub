@@ -36,3 +36,5 @@ Thumbs.db
 
 # Test output
 test-results/
+
+/src/generated/prisma
