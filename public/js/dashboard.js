@@ -85,6 +85,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
     try {
       const response = await fetch(API_BASE + '/api/shopify/test');
+
+      // Handle HTTP errors
+      if (!response.ok) {
+        // Try fallback - if analytics works, Shopify is connected
+        try {
+          const analyticsResponse = await fetch(API_BASE + '/api/shopify/analytics');
+          const analyticsData = await analyticsResponse.json();
+          if (analyticsData.success) {
+            badge.textContent = '✓ מחובר';
+            badge.className = 'status-badge connected';
+            if (desc) desc.textContent = 'Shopify Store';
+            return;
+          }
+        } catch (e) { /* fallback failed */ }
+
+        badge.textContent = 'לא מחובר';
+        badge.className = 'status-badge disconnected';
+        return;
+      }
+
       const data = await response.json();
 
       if (data.success) {
@@ -93,11 +113,27 @@ document.addEventListener('DOMContentLoaded', function() {
         if (desc && data.shop && data.shop.name) {
           desc.textContent = data.shop.name;
         }
+      } else if (data.error) {
+        // API returned error - try fallback
+        try {
+          const analyticsResponse = await fetch(API_BASE + '/api/shopify/analytics');
+          const analyticsData = await analyticsResponse.json();
+          if (analyticsData.success) {
+            badge.textContent = '✓ מחובר';
+            badge.className = 'status-badge connected';
+            if (desc) desc.textContent = 'Shopify Store';
+            return;
+          }
+        } catch (e) { /* fallback failed */ }
+
+        badge.textContent = 'לא מחובר';
+        badge.className = 'status-badge disconnected';
       } else {
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
       }
     } catch (error) {
+      console.error('Shopify status check error:', error);
       badge.textContent = 'שגיאה';
       badge.className = 'status-badge disconnected';
     }
@@ -111,15 +147,23 @@ document.addEventListener('DOMContentLoaded', function() {
 
     try {
       const response = await fetch(API_BASE + '/api/meta/status');
+
+      // Handle HTTP errors
+      if (!response.ok) {
+        badge.textContent = 'שגיאה';
+        badge.className = 'status-badge disconnected';
+        return;
+      }
+
       const data = await response.json();
 
-      if (data.connected) {
+      if (data.connected === true) {
         badge.textContent = '✓ מחובר';
         badge.className = 'status-badge connected';
         if (desc && data.page && data.page.name) {
           desc.textContent = data.page.name;
         }
-      } else if (data.configured) {
+      } else if (data.configured === true) {
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
       } else {
@@ -127,6 +171,7 @@ document.addEventListener('DOMContentLoaded', function() {
         badge.className = 'status-badge pending';
       }
     } catch (error) {
+      console.error('Meta status check error:', error);
       badge.textContent = 'שגיאה';
       badge.className = 'status-badge disconnected';
     }

@@ -3,6 +3,41 @@ const shopifyService = require('../services/shopify');
 
 const router = express.Router();
 
+// ==========================================
+// RATE LIMITING & CACHING FOR SHOPIFY API
+// ==========================================
+
+// Cache for discounts (5 minute TTL)
+let discountsCache = {
+  data: null,
+  timestamp: 0,
+  TTL: 5 * 60 * 1000 // 5 minutes
+};
+
+// Rate limiter: max 2 requests per second to Shopify
+const rateLimiter = {
+  lastRequestTime: 0,
+  minInterval: 500, // 500ms between requests = max 2 per second
+
+  async wait() {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+
+    if (timeSinceLastRequest < this.minInterval) {
+      const waitTime = this.minInterval - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+
+    this.lastRequestTime = Date.now();
+  }
+};
+
+// Helper function for rate-limited API calls
+async function rateLimitedRequest(requestFn) {
+  await rateLimiter.wait();
+  return requestFn();
+}
+
 // GET /api/shopify/analytics - Sales summary
 router.get('/analytics', async (req, res) => {
   try {
@@ -71,22 +106,40 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
-// GET /api/shopify/discounts - Coupon codes and usage (FIXED)
+// GET /api/shopify/discounts - Coupon codes and usage (WITH RATE LIMITING & CACHING)
 router.get('/discounts', async (req, res) => {
   try {
+    // Check cache first (5 minute TTL)
+    const now = Date.now();
+    if (discountsCache.data && (now - discountsCache.timestamp) < discountsCache.TTL) {
+      console.log('=== RETURNING CACHED DISCOUNTS ===');
+      return res.json({
+        success: true,
+        data: discountsCache.data,
+        total: discountsCache.data.length,
+        cached: true,
+        cacheAge: Math.round((now - discountsCache.timestamp) / 1000) + 's'
+      });
+    }
+
     const { baseUrl, headers } = shopifyService.getConfig();
     const axios = require('axios');
     const allDiscounts = [];
 
-    console.log('=== FETCHING SHOPIFY DISCOUNTS ===');
+    console.log('=== FETCHING SHOPIFY DISCOUNTS (RATE LIMITED) ===');
 
-    // 1. Fetch ALL price rules with pagination
+    // 1. Fetch ALL price rules with pagination (rate limited)
     let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
     let allPriceRules = [];
 
     while (priceRulesUrl) {
       console.log('Fetching price rules:', priceRulesUrl);
-      const priceRulesResponse = await axios.get(priceRulesUrl, { headers });
+
+      // Rate limited request
+      const priceRulesResponse = await rateLimitedRequest(() =>
+        axios.get(priceRulesUrl, { headers })
+      );
+
       const rules = priceRulesResponse.data.price_rules || [];
       allPriceRules = allPriceRules.concat(rules);
       console.log(`Got ${rules.length} price rules, total: ${allPriceRules.length}`);
@@ -102,25 +155,34 @@ router.get('/discounts', async (req, res) => {
 
     console.log(`Total price rules found: ${allPriceRules.length}`);
 
-    // 2. Get discount codes for each price rule (with pagination)
-    for (const rule of allPriceRules) {
+    // 2. Get discount codes for each price rule (rate limited, with 1 second delay between rules)
+    for (let i = 0; i < allPriceRules.length; i++) {
+      const rule = allPriceRules[i];
       let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
+
+      // Add 1 second delay between price rules (not just rate limit)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
 
       while (codesUrl) {
         try {
-          const codesResponse = await axios.get(codesUrl, { headers });
+          // Rate limited request
+          const codesResponse = await rateLimitedRequest(() =>
+            axios.get(codesUrl, { headers })
+          );
+
           const codes = codesResponse.data.discount_codes || [];
 
           console.log(`Price rule "${rule.title}" (ID: ${rule.id}): ${codes.length} codes`);
 
           // Add each discount code as a separate entry
           for (const code of codes) {
-            console.log(`  - Code: "${code.code}", usage_count: ${code.usage_count}`);
             allDiscounts.push({
               id: code.id,
               priceRuleId: rule.id,
               code: code.code,
-              title: code.code, // Use code as title for display
+              title: code.code,
               value: rule.value,
               valueType: rule.value_type,
               targetType: rule.target_type,
@@ -140,15 +202,25 @@ router.get('/discounts', async (req, res) => {
             if (nextMatch) codesUrl = nextMatch[1];
           }
         } catch (e) {
+          // Handle 429 Too Many Requests specifically
+          if (e.response?.status === 429) {
+            console.log('Rate limited by Shopify, waiting 2 seconds...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            continue; // Retry the same URL
+          }
           console.log(`Error fetching codes for rule ${rule.id}:`, e.message);
           codesUrl = null;
         }
       }
     }
 
-    // 3. Try to fetch automatic discounts (GraphQL API)
+    // 3. Try to fetch automatic discounts (GraphQL API) - rate limited
     try {
       console.log('Fetching automatic discounts via GraphQL...');
+
+      // Wait before GraphQL call
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       const graphqlUrl = baseUrl.replace('/admin/api/2024-01', '/admin/api/2024-01/graphql.json');
 
       const graphqlQuery = {
@@ -204,7 +276,9 @@ router.get('/discounts', async (req, res) => {
         }`
       };
 
-      const graphqlResponse = await axios.post(graphqlUrl, graphqlQuery, { headers });
+      const graphqlResponse = await rateLimitedRequest(() =>
+        axios.post(graphqlUrl, graphqlQuery, { headers })
+      );
 
       if (graphqlResponse.data?.data?.discountNodes?.edges) {
         const nodes = graphqlResponse.data.data.discountNodes.edges;
@@ -220,13 +294,10 @@ router.get('/discounts', async (req, res) => {
               const existingCode = allDiscounts.find(d => d.code === codeData.code);
 
               if (existingCode) {
-                // Update usage count if GraphQL has better data
                 if (codeData.usageCount && codeData.usageCount > existingCode.usageCount) {
-                  console.log(`Updating ${codeData.code} usage: ${existingCode.usageCount} -> ${codeData.usageCount}`);
                   existingCode.usageCount = codeData.usageCount;
                 }
               } else {
-                console.log(`GraphQL found new code: ${codeData.code}, usage: ${codeData.usageCount}`);
                 allDiscounts.push({
                   id: node.id,
                   code: codeData.code,
@@ -246,20 +317,34 @@ router.get('/discounts', async (req, res) => {
     // Sort by usage count (highest first)
     allDiscounts.sort((a, b) => b.usageCount - a.usageCount);
 
-    console.log(`=== TOTAL DISCOUNTS: ${allDiscounts.length} ===`);
-    console.log('Top 5 by usage:');
-    allDiscounts.slice(0, 5).forEach(d => {
-      console.log(`  ${d.code}: ${d.usageCount} uses`);
-    });
+    // Update cache
+    discountsCache.data = allDiscounts;
+    discountsCache.timestamp = Date.now();
+
+    console.log(`=== TOTAL DISCOUNTS: ${allDiscounts.length} (CACHED FOR 5 MIN) ===`);
 
     res.json({
       success: true,
       data: allDiscounts,
-      total: allDiscounts.length
+      total: allDiscounts.length,
+      cached: false
     });
 
   } catch (error) {
     console.error('Discounts error:', error.message);
+
+    // If we have cached data, return it even if stale
+    if (discountsCache.data) {
+      console.log('Returning stale cache due to error');
+      return res.json({
+        success: true,
+        data: discountsCache.data,
+        total: discountsCache.data.length,
+        cached: true,
+        stale: true
+      });
+    }
+
     res.status(500).json({
       error: true,
       message: error.message
