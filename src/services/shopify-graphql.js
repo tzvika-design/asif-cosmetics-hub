@@ -196,12 +196,18 @@ class ShopifyGraphQL {
       }
     `;
 
-    // Build date query - use simple date format YYYY-MM-DD
-    const startISO = startDate.toISOString().split('T')[0];
-    const endISO = endDate.toISOString().split('T')[0];
+    // Build date query - extend range by 1 day to handle timezone differences
+    // Shopify stores dates in store timezone (Israel +02:00), server runs in UTC
+    const adjustedStart = new Date(startDate);
+    adjustedStart.setDate(adjustedStart.getDate() - 1); // 1 day earlier
+    const adjustedEnd = new Date(endDate);
+    adjustedEnd.setDate(adjustedEnd.getDate() + 1); // 1 day later
+
+    const startISO = adjustedStart.toISOString().split('T')[0];
+    const endISO = adjustedEnd.toISOString().split('T')[0];
     const dateQuery = `created_at:>=${startISO} created_at:<=${endISO}`;
 
-    console.log(`[ShopifyGraphQL] getOrders date query: "${dateQuery}"`);
+    console.log(`[ShopifyGraphQL] getOrders query: "${dateQuery}" (original: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]})`);
 
     while (hasNextPage) {
       pageCount++;

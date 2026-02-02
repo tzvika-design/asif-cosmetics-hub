@@ -259,6 +259,10 @@ class StatsPreloader {
   async initialize() {
     console.log('[StatsPreloader] Initializing...');
 
+    // Clear all caches to ensure fresh data
+    console.log('[StatsPreloader] Clearing all caches...');
+    cache.clearPattern('shopify');
+
     // Start preloading immediately
     await this.preloadAll();
 

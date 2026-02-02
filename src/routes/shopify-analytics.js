@@ -666,11 +666,18 @@ router.post('/cache/refresh', async (req, res) => {
   const startTime = Date.now();
 
   try {
-    console.log('[API] /cache/refresh - starting manual refresh');
+    console.log('[API] /cache/refresh - clearing ALL caches and refreshing');
+
+    // Clear ALL shopify caches
+    cache.clearPattern('shopify');
+    console.log('[API] Cache cleared');
+
+    // Force refresh preloader
     const status = await statsPreloader.refresh();
 
     res.json({
       success: true,
+      message: 'Cache cleared and data refreshed',
       status,
       responseTime: Date.now() - startTime
     });
@@ -678,6 +685,16 @@ router.post('/cache/refresh', async (req, res) => {
     console.error('[API] /cache/refresh error:', error.message);
     res.status(500).json({ success: false, message: error.message });
   }
+});
+
+/**
+ * GET /api/shopify/cache/clear
+ * Just clear cache (quick)
+ */
+router.get('/cache/clear', (req, res) => {
+  cache.clearPattern('shopify');
+  console.log('[API] Cache manually cleared');
+  res.json({ success: true, message: 'Cache cleared' });
 });
 
 /**
