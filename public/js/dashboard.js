@@ -165,11 +165,43 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  // Check Meta Status
+  async function checkMetaStatus() {
+    const statusCard = document.getElementById('statusMeta');
+    if (!statusCard) return;
+    const badge = statusCard.querySelector('.status-badge');
+
+    try {
+      const response = await fetch(API_BASE + '/api/meta/status');
+      const data = await response.json();
+
+      if (data.connected) {
+        badge.textContent = 'מחובר';
+        badge.className = 'status-badge connected';
+        // Update page name if available
+        const pageName = statusCard.querySelector('.status-card-content p');
+        if (pageName && data.page && data.page.name) {
+          pageName.textContent = data.page.name;
+        }
+      } else if (data.configured) {
+        badge.textContent = 'לא מחובר';
+        badge.className = 'status-badge disconnected';
+      } else {
+        badge.textContent = 'לא מוגדר';
+        badge.className = 'status-badge pending';
+      }
+    } catch (error) {
+      badge.textContent = 'שגיאה';
+      badge.className = 'status-badge disconnected';
+    }
+  }
+
   // Check all service statuses
   async function checkAllStatuses() {
     await Promise.all([
       checkClaudeStatus(),
-      checkShopifyStatus()
+      checkShopifyStatus(),
+      checkMetaStatus()
     ]);
   }
 
