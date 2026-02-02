@@ -1331,6 +1331,120 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
+  // WEBHOOKS MANAGEMENT
+  // ==========================================
+
+  async function listWebhooks() {
+    const resultsDiv = document.getElementById('webhooksResults');
+    if (!resultsDiv) return;
+
+    resultsDiv.innerHTML = '<span style="color: var(--accent);">⏳ טוען...</span>';
+
+    try {
+      const response = await fetch(`${API_BASE}/webhooks/shopify/list`);
+      const data = await response.json();
+
+      if (!data.success) {
+        resultsDiv.innerHTML = `<span style="color: var(--error);">❌ ${data.error}</span>`;
+        return;
+      }
+
+      if (data.count === 0) {
+        resultsDiv.innerHTML = `
+          <div style="color: var(--warn);">
+            ⚠️ אין webhooks רשומים<br><br>
+            לחץ על "רשום Webhooks" כדי להפעיל עדכונים בזמן אמת
+          </div>
+        `;
+        return;
+      }
+
+      let html = `<div style="color: var(--success); margin-bottom: 10px;">✅ ${data.count} webhooks רשומים:</div>`;
+      html += '<table style="width: 100%; font-size: 0.75rem;">';
+      html += '<tr style="color: var(--text-muted);"><th style="text-align: right;">סוג</th><th style="text-align: right;">כתובת</th></tr>';
+
+      data.webhooks.forEach(w => {
+        const topicIcon = w.topic.includes('order') ? '🛒' :
+                         w.topic.includes('product') ? '📦' :
+                         w.topic.includes('customer') ? '👤' :
+                         w.topic.includes('inventory') ? '📊' : '🔔';
+        html += `<tr>
+          <td>${topicIcon} ${w.topic}</td>
+          <td style="color: var(--text-muted); font-size: 0.7rem;">${w.address.split('/webhooks')[1] || w.address}</td>
+        </tr>`;
+      });
+
+      html += '</table>';
+      resultsDiv.innerHTML = html;
+
+    } catch (error) {
+      resultsDiv.innerHTML = `<span style="color: var(--error);">❌ שגיאה: ${error.message}</span>`;
+    }
+  }
+
+  async function registerWebhooks() {
+    const resultsDiv = document.getElementById('webhooksResults');
+    if (!resultsDiv) return;
+
+    resultsDiv.innerHTML = '<span style="color: var(--accent);">⏳ רושם webhooks...</span>';
+
+    try {
+      const response = await fetch(`${API_BASE}/webhooks/shopify/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await response.json();
+
+      if (!data.success) {
+        resultsDiv.innerHTML = `<span style="color: var(--error);">❌ ${data.error}</span>`;
+        return;
+      }
+
+      let html = '<div style="margin-bottom: 10px;">';
+      html += `<strong>App URL:</strong> ${data.appUrl}<br><br>`;
+
+      if (data.results.success.length > 0) {
+        html += `<div style="color: var(--success);">✅ נרשמו בהצלחה (${data.results.success.length}):</div>`;
+        data.results.success.forEach(t => {
+          html += `<div style="margin-right: 15px;">• ${t}</div>`;
+        });
+      }
+
+      if (data.results.existing.length > 0) {
+        html += `<br><div style="color: var(--info);">ℹ️ כבר רשומים (${data.results.existing.length}):</div>`;
+        data.results.existing.forEach(t => {
+          html += `<div style="margin-right: 15px; color: var(--text-muted);">• ${t}</div>`;
+        });
+      }
+
+      if (data.results.failed.length > 0) {
+        html += `<br><div style="color: var(--error);">❌ נכשלו (${data.results.failed.length}):</div>`;
+        data.results.failed.forEach(f => {
+          html += `<div style="margin-right: 15px;">• ${f.topic}: ${JSON.stringify(f.error)}</div>`;
+        });
+      }
+
+      html += '</div>';
+      resultsDiv.innerHTML = html;
+
+    } catch (error) {
+      resultsDiv.innerHTML = `<span style="color: var(--error);">❌ שגיאה: ${error.message}</span>`;
+    }
+  }
+
+  // Setup webhook buttons
+  const listWebhooksBtn = document.getElementById('listWebhooksBtn');
+  const registerWebhooksBtn = document.getElementById('registerWebhooksBtn');
+
+  if (listWebhooksBtn) {
+    listWebhooksBtn.addEventListener('click', listWebhooks);
+  }
+
+  if (registerWebhooksBtn) {
+    registerWebhooksBtn.addEventListener('click', registerWebhooks);
+  }
+
+  // ==========================================
   // INITIALIZATION
   // ==========================================
 

@@ -1427,6 +1427,29 @@
           </div>
         </div>
 
+        <!-- Webhooks Panel -->
+        <div class="panel" style="margin-top: 20px;">
+          <div class="panel-header">
+            <span class="panel-title">🔔 Webhooks - עדכונים בזמן אמת</span>
+            <div style="display: flex; gap: 10px;">
+              <button id="listWebhooksBtn" class="btn btn-small" style="padding: 8px 16px; font-size: 0.8rem;">
+                הצג רשומים
+              </button>
+              <button id="registerWebhooksBtn" class="btn btn-small" style="padding: 8px 16px; font-size: 0.8rem; background: var(--accent);">
+                רשום Webhooks
+              </button>
+            </div>
+          </div>
+          <div class="panel-content">
+            <p style="color: var(--text-muted); margin-bottom: 15px; font-size: 0.85rem;">
+              Webhooks מאפשרים לקבל עדכונים אוטומטיים משופיפיי כשיש הזמנה חדשה, עדכון מוצר וכו׳
+            </p>
+            <div id="webhooksResults" style="font-family: monospace; font-size: 0.8rem; background: var(--bg); padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;">
+              <span style="color: var(--text-muted);">לחץ על "הצג רשומים" לראות webhooks קיימים</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Debug Panel -->
         <div class="panel" style="margin-top: 20px;">
           <div class="panel-header">
