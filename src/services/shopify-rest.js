@@ -86,12 +86,53 @@ class ShopifyREST {
   }
 
   /**
+   * Valid sales channels - exclude import tools like Matrixify
+   */
+  static VALID_SALES_CHANNELS = [
+    'web',                    // Online Store
+    'shopify_draft_order',    // Draft Orders
+    'subscription_contract',  // Subscription apps (Joy, etc.)
+    'pos',                    // Point of Sale
+    'iphone',                 // Shopify mobile app
+    'android',                // Shopify mobile app
+    'mobile',                 // Mobile orders
+    'api'                     // API orders (legitimate)
+  ];
+
+  /**
+   * Import tools to exclude from stats
+   */
+  static EXCLUDED_SOURCES = [
+    'Matrixify App',
+    'matrixify',
+    'Excelify',
+    'Import'
+  ];
+
+  /**
+   * Check if order is from a valid sales channel (not imported)
+   */
+  isValidSalesOrder(order) {
+    const source = (order.source_name || '').toLowerCase();
+
+    // Exclude known import tools
+    for (const excluded of ShopifyREST.EXCLUDED_SOURCES) {
+      if (source.includes(excluded.toLowerCase())) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Get orders within a date range - FETCHES ALL PAGES
    * @param {Date} startDate - Start of date range
    * @param {Date} endDate - End of date range
    * @param {Object} options - Optional filters
    * @param {boolean} options.paidOnly - Only include paid orders (default: true to match Shopify Admin)
    * @param {boolean} options.excludeCancelled - Exclude cancelled orders (default: true)
+   * @param {boolean} options.excludeImports - Exclude imported orders like Matrixify (default: true)
    * @returns {Array} - Array of orders
    */
   async getOrders(startDate, endDate, options = {}) {
@@ -100,10 +141,11 @@ class ShopifyREST {
     // Default to paid only to match Shopify Admin reports
     const paidOnly = options.paidOnly !== false;
     const excludeCancelled = options.excludeCancelled !== false;
+    const excludeImports = options.excludeImports !== false;
 
     const startStr = startDate.toISOString().split('T')[0];
     const endStr = endDate.toISOString().split('T')[0];
-    const filterKey = paidOnly ? '_paid' : '_all';
+    const filterKey = `${paidOnly ? '_paid' : '_all'}${excludeImports ? '_noimport' : ''}`;
 
     // Check cache first
     const cacheKey = `shopify_rest_orders_${startStr}_${endStr}${filterKey}`;
@@ -177,23 +219,38 @@ class ShopifyREST {
       console.warn(`[ShopifyREST] WARNING: Hit max pages limit (${maxPages})`);
     }
 
-    // Post-process: filter out cancelled orders if requested
+    // Post-process: filter orders
     let filteredOrders = allOrders;
-    if (excludeCancelled) {
-      filteredOrders = allOrders.filter(order => {
-        // Exclude cancelled orders
-        if (order.cancelled_at) return false;
-        // Exclude voided orders
-        if (order.financial_status === 'voided') return false;
-        return true;
-      });
+    let cancelledCount = 0;
+    let importedCount = 0;
 
-      if (filteredOrders.length !== allOrders.length) {
-        console.log(`[ShopifyREST] Filtered out ${allOrders.length - filteredOrders.length} cancelled/voided orders`);
+    filteredOrders = allOrders.filter(order => {
+      // Exclude cancelled orders
+      if (excludeCancelled && order.cancelled_at) {
+        cancelledCount++;
+        return false;
       }
+      // Exclude voided orders
+      if (excludeCancelled && order.financial_status === 'voided') {
+        cancelledCount++;
+        return false;
+      }
+      // Exclude imported orders (Matrixify, etc.)
+      if (excludeImports && !this.isValidSalesOrder(order)) {
+        importedCount++;
+        return false;
+      }
+      return true;
+    });
+
+    if (cancelledCount > 0) {
+      console.log(`[ShopifyREST] Filtered out ${cancelledCount} cancelled/voided orders`);
+    }
+    if (importedCount > 0) {
+      console.log(`[ShopifyREST] Filtered out ${importedCount} imported orders (Matrixify, etc.)`);
     }
 
-    console.log(`[ShopifyREST] Done: ${filteredOrders.length} orders in ${pageCount} pages`);
+    console.log(`[ShopifyREST] Done: ${filteredOrders.length} valid orders from ${allOrders.length} total (${pageCount} pages)`);
 
     // Cache the result
     cache.set(cacheKey, filteredOrders, TTL.ORDERS);

@@ -210,8 +210,28 @@ app.get('/api/shopify/2025', async (req, res) => {
       if (nextUrl) await new Promise(r => setTimeout(r, 100));
     }
 
-    // Filter out cancelled orders
-    const validOrders = showAll ? allOrders : allOrders.filter(o => !o.cancelled_at && o.financial_status !== 'voided');
+    // Excluded import sources (like Matrixify)
+    const EXCLUDED_SOURCES = ['Matrixify App', 'matrixify', 'Excelify', 'Import'];
+
+    const isValidSalesOrder = (order) => {
+      const source = (order.source_name || '').toLowerCase();
+      for (const excluded of EXCLUDED_SOURCES) {
+        if (source.includes(excluded.toLowerCase())) return false;
+      }
+      return true;
+    };
+
+    // Filter out cancelled orders AND imported orders
+    const validOrders = allOrders.filter(o => {
+      if (showAll) return true;
+      if (o.cancelled_at) return false;
+      if (o.financial_status === 'voided') return false;
+      if (!isValidSalesOrder(o)) return false;
+      return true;
+    });
+
+    // Count imported orders for reference
+    const importedOrders = allOrders.filter(o => !isValidSalesOrder(o));
 
     const grossSales = validOrders.reduce((s, o) => s + parseFloat(o.subtotal_price || 0) + parseFloat(o.total_discounts || 0), 0);
     const netSales = validOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
@@ -228,19 +248,27 @@ app.get('/api/shopify/2025', async (req, res) => {
       statusCounts[o.financial_status] = (statusCounts[o.financial_status] || 0) + 1;
     });
 
-    // Count by source/channel
+    // Count by source/channel (valid orders only)
     const sourceCounts = {};
     validOrders.forEach(o => {
       const source = o.source_name || 'unknown';
       sourceCounts[source] = (sourceCounts[source] || 0) + 1;
     });
 
+    // Count excluded sources
+    const excludedSourceCounts = {};
+    importedOrders.forEach(o => {
+      const source = o.source_name || 'unknown';
+      excludedSourceCounts[source] = (excludedSourceCounts[source] || 0) + 1;
+    });
+
     res.json({
       success: true,
-      mode: showAll ? 'ALL orders (including cancelled/refunded)' : 'PAID orders only (matches Shopify Admin)',
+      mode: showAll ? 'ALL orders (including imports)' : 'REAL SALES only (excludes Matrixify imports)',
       pages: page,
       ordersFetched: allOrders.length,
       ordersValid: validOrders.length,
+      ordersExcluded: importedOrders.length,
       grossSales: Math.round(grossSales),
       netSales: Math.round(netSales),
       totalDiscounts: Math.round(totalDiscounts),
@@ -249,20 +277,22 @@ app.get('/api/shopify/2025', async (req, res) => {
         first: firstDate?.toISOString(),
         last: lastDate?.toISOString()
       },
-      byFinancialStatus: statusCounts,
       bySource: sourceCounts,
+      excludedSources: excludedSourceCounts,
       shopifyAdminExpected: {
         orders: 8043,
         grossSales: 2873833
       },
-      note: showAll ? 'Add ?all=false to see paid orders only' : 'Add ?all=true to see all orders including cancelled',
+      match: {
+        ordersMatch: Math.abs(validOrders.length - 8043) < 100,
+        salesMatch: Math.abs(grossSales - 2873833) < 50000
+      },
+      note: showAll ? 'Add ?all=false to exclude imports' : 'Matrixify imports excluded. Add ?all=true to include all',
       sample: validOrders.slice(0, 5).map(o => ({
         name: o.name,
         created_at: o.created_at,
         total: o.total_price,
-        financial_status: o.financial_status,
-        source: o.source_name,
-        cancelled: !!o.cancelled_at
+        source: o.source_name
       }))
     });
   } catch (e) {
