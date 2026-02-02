@@ -14,10 +14,10 @@ let discountsCache = {
   TTL: 5 * 60 * 1000 // 5 minutes
 };
 
-// Rate limiter: max 2 requests per second to Shopify
+// Rate limiter: max 1 request per second to Shopify (to avoid 429 errors)
 const rateLimiter = {
   lastRequestTime: 0,
-  minInterval: 500, // 500ms between requests = max 2 per second
+  minInterval: 1000, // 1000ms between requests = max 1 per second
 
   async wait() {
     const now = Date.now();
@@ -25,6 +25,7 @@ const rateLimiter = {
 
     if (timeSinceLastRequest < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLastRequest;
+      console.log(`Rate limiting: waiting ${waitTime}ms before next Shopify request`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
@@ -32,11 +33,38 @@ const rateLimiter = {
   }
 };
 
-// Helper function for rate-limited API calls
-async function rateLimitedRequest(requestFn) {
+// Helper function for rate-limited API calls with timeout and retry
+async function rateLimitedRequest(requestFn, retries = 2) {
   await rateLimiter.wait();
-  return requestFn();
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await requestFn();
+    } catch (error) {
+      // Handle 429 Too Many Requests
+      if (error.response?.status === 429) {
+        console.log(`Rate limited (429), waiting 3 seconds before retry ${attempt}/${retries}...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        if (attempt === retries) throw error;
+        continue;
+      }
+      // Handle timeout
+      if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+        console.log(`Request timeout, retry ${attempt}/${retries}...`);
+        if (attempt === retries) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
+
+// Axios config with timeout
+const axiosConfig = (headers) => ({
+  headers,
+  timeout: 15000 // 15 second timeout per request
+});
 
 // GET /api/shopify/analytics - Sales summary
 router.get('/analytics', async (req, res) => {
@@ -135,9 +163,9 @@ router.get('/discounts', async (req, res) => {
     while (priceRulesUrl) {
       console.log('Fetching price rules:', priceRulesUrl);
 
-      // Rate limited request
+      // Rate limited request with timeout
       const priceRulesResponse = await rateLimitedRequest(() =>
-        axios.get(priceRulesUrl, { headers })
+        axios.get(priceRulesUrl, axiosConfig(headers))
       );
 
       const rules = priceRulesResponse.data.price_rules || [];
@@ -167,9 +195,9 @@ router.get('/discounts', async (req, res) => {
 
       while (codesUrl) {
         try {
-          // Rate limited request
+          // Rate limited request with timeout
           const codesResponse = await rateLimitedRequest(() =>
-            axios.get(codesUrl, { headers })
+            axios.get(codesUrl, axiosConfig(headers))
           );
 
           const codes = codesResponse.data.discount_codes || [];
@@ -277,7 +305,7 @@ router.get('/discounts', async (req, res) => {
       };
 
       const graphqlResponse = await rateLimitedRequest(() =>
-        axios.post(graphqlUrl, graphqlQuery, { headers })
+        axios.post(graphqlUrl, graphqlQuery, axiosConfig(headers))
       );
 
       if (graphqlResponse.data?.data?.discountNodes?.edges) {

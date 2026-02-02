@@ -150,22 +150,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
       // Handle HTTP errors
       if (!response.ok) {
+        console.error('Meta status HTTP error:', response.status);
         badge.textContent = 'שגיאה';
         badge.className = 'status-badge disconnected';
         return;
       }
 
       const data = await response.json();
+      console.log('Meta status response:', data);
 
-      if (data.connected === true) {
+      // Check if connected - handle both boolean and truthy values
+      if (data.connected) {
         badge.textContent = '✓ מחובר';
         badge.className = 'status-badge connected';
-        if (desc && data.page && data.page.name) {
-          desc.textContent = data.page.name;
+        if (desc) {
+          if (data.page && data.page.name) {
+            desc.textContent = data.page.name;
+          } else {
+            desc.textContent = 'Meta Business';
+          }
         }
-      } else if (data.configured === true) {
-        badge.textContent = 'לא מחובר';
+      } else if (data.configured) {
+        // Has config but API call failed
+        badge.textContent = 'טוקן לא תקין';
         badge.className = 'status-badge disconnected';
+        if (desc && data.error) {
+          desc.textContent = data.error.substring(0, 50);
+        }
       } else {
         badge.textContent = 'לא מוגדר';
         badge.className = 'status-badge pending';
@@ -825,15 +836,36 @@ document.addEventListener('DOMContentLoaded', function() {
     // Render tracked coupons first (from localStorage)
     renderTrackedCoupons();
 
+    // Show loading state
+    container.innerHTML = `
+      <div class="loading">
+        <div class="spinner"></div>
+        <p>טוען קופונים...</p>
+      </div>
+    `;
+
     try {
       console.log('Fetching coupons from API...');
-      const response = await fetch(API_BASE + '/api/shopify/discounts');
+
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+      const response = await fetch(API_BASE + '/api/shopify/discounts', {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const data = await response.json();
       console.log('Coupons API response:', data);
 
       if (data.success) {
-        allCoupons = data.data; // All coupons from API
-        console.log(`Loaded ${allCoupons.length} coupons`);
+        allCoupons = data.data || [];
+        console.log(`Loaded ${allCoupons.length} coupons${data.cached ? ' (from cache)' : ''}`);
 
         if (allCoupons.length === 0) {
           container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין קופונים פעילים</p>';
@@ -853,13 +885,29 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       } else {
         console.error('Coupons API error:', data.message);
-        container.innerHTML = `<p style="color: var(--error); text-align: center;">שגיאה: ${data.message}</p>`;
+        container.innerHTML = `
+          <div style="text-align: center; padding: 20px;">
+            <p style="color: var(--error);">שגיאה בטעינת קופונים</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">${data.message || 'Unknown error'}</p>
+            <button onclick="loadCoupons()" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer;">נסה שוב</button>
+          </div>
+        `;
       }
     } catch (e) {
       console.error('Coupons fetch error:', e);
-      container.innerHTML = '<p style="color: var(--error); text-align: center;">שגיאה בטעינת קופונים</p>';
+      const errorMessage = e.name === 'AbortError' ? 'הבקשה נכשלה - timeout' : e.message;
+      container.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+          <p style="color: var(--error);">שגיאה בטעינת קופונים</p>
+          <p style="color: var(--text-muted); font-size: 0.85rem;">${errorMessage}</p>
+          <button onclick="loadCoupons()" style="margin-top: 10px; padding: 8px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer;">נסה שוב</button>
+        </div>
+      `;
     }
   }
+
+  // Make loadCoupons available globally for retry button
+  window.loadCoupons = loadCoupons;
 
   // ==========================================
   // SETTINGS STATUS

@@ -20,7 +20,7 @@ router.get('/status', async (req, res) => {
   const config = getConfig();
 
   const status = {
-    configured: !!(config.appId && config.pageAccessToken),
+    configured: !!(config.pageAccessToken),
     appId: config.appId ? '✓ Set' : '✗ Missing',
     pageAccessToken: config.pageAccessToken ? '✓ Set' : '✗ Missing',
     pageId: config.pageId ? '✓ Set' : '✗ Missing',
@@ -30,16 +30,26 @@ router.get('/status', async (req, res) => {
   // If we have a token, try to verify it
   if (config.pageAccessToken) {
     try {
+      console.log('Checking Meta connection...');
+
+      // Add timeout to prevent hanging
       const response = await axios.get(`${GRAPH_API}/me`, {
-        params: { access_token: config.pageAccessToken }
+        params: {
+          access_token: config.pageAccessToken,
+          fields: 'id,name'
+        },
+        timeout: 10000 // 10 second timeout
       });
+
+      console.log('Meta API response:', response.data);
 
       status.connected = true;
       status.page = {
         id: response.data.id,
-        name: response.data.name
+        name: response.data.name || 'Meta Page'
       };
     } catch (error) {
+      console.error('Meta API error:', error.response?.data || error.message);
       status.connected = false;
       status.error = error.response?.data?.error?.message || error.message;
     }
