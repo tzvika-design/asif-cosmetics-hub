@@ -11,6 +11,7 @@ class ShopifyREST {
   constructor() {
     this.client = null;
     this.initialized = false;
+    this.baseURL = null;
   }
 
   /**
@@ -22,9 +23,10 @@ class ShopifyREST {
     }
 
     const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+    this.baseURL = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
 
     this.client = axios.create({
-      baseURL: `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`,
+      baseURL: this.baseURL,
       headers: {
         'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
         'Content-Type': 'application/json'
@@ -47,25 +49,33 @@ class ShopifyREST {
 
   /**
    * Extract next page URL from Link header
+   * Shopify uses cursor-based pagination with Link headers
    */
   extractNextUrl(linkHeader) {
-    if (!linkHeader) return null;
+    if (!linkHeader) {
+      return null;
+    }
 
-    const links = linkHeader.split(',');
-    for (const link of links) {
-      const match = link.match(/<([^>]+)>;\s*rel="next"/);
-      if (match) {
-        // Extract just the path from the full URL
-        const url = new URL(match[1]);
-        return url.pathname + url.search;
+    try {
+      // Link header format: <url>; rel="next", <url>; rel="previous"
+      const links = linkHeader.split(',');
+      for (const link of links) {
+        if (link.includes('rel="next"')) {
+          const match = link.match(/<([^>]+)>/);
+          if (match) {
+            // Return full URL - axios will handle it
+            return match[1];
+          }
+        }
       }
+    } catch (error) {
+      console.error('[ShopifyREST] Error parsing Link header:', error.message);
     }
     return null;
   }
 
   /**
    * Format date for Shopify REST API (ISO 8601)
-   * Handles Israel timezone (UTC+2/+3)
    */
   formatDateForAPI(date, isEndOfDay = false) {
     const d = new Date(date);
@@ -76,7 +86,7 @@ class ShopifyREST {
   }
 
   /**
-   * Get orders within a date range
+   * Get orders within a date range - FETCHES ALL PAGES
    * @param {Date} startDate - Start of date range
    * @param {Date} endDate - End of date range
    * @returns {Array} - Array of orders
@@ -96,36 +106,75 @@ class ShopifyREST {
     }
 
     const allOrders = [];
-    let url = `/orders.json?status=any&limit=250&created_at_min=${this.formatDateForAPI(startDate)}&created_at_max=${this.formatDateForAPI(endDate, true)}`;
     let pageCount = 0;
+    const maxPages = 100; // Safety limit
 
-    console.log(`[ShopifyREST] Fetching orders from ${startStr} to ${endStr}...`);
+    // Build initial URL with date filters
+    const params = new URLSearchParams({
+      status: 'any',
+      limit: '250',
+      created_at_min: this.formatDateForAPI(startDate),
+      created_at_max: this.formatDateForAPI(endDate, true)
+    });
 
-    while (url) {
+    let url = `/orders.json?${params.toString()}`;
+
+    console.log(`[ShopifyREST] ========================================`);
+    console.log(`[ShopifyREST] Fetching orders: ${startStr} to ${endStr}`);
+    console.log(`[ShopifyREST] Initial URL: ${url}`);
+
+    while (url && pageCount < maxPages) {
       pageCount++;
       try {
-        console.log(`[ShopifyREST] Fetching page ${pageCount}...`);
-        const response = await this.client.get(url);
+        console.log(`[ShopifyREST] Page ${pageCount}...`);
+
+        // For subsequent pages, url is a full URL
+        const response = pageCount === 1
+          ? await this.client.get(url)
+          : await axios.get(url, {
+              headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+              timeout: 30000
+            });
+
         const orders = response.data.orders || [];
         allOrders.push(...orders);
 
-        console.log(`[ShopifyREST] Page ${pageCount}: ${orders.length} orders (total: ${allOrders.length})`);
+        console.log(`[ShopifyREST] Page ${pageCount}: ${orders.length} orders (running total: ${allOrders.length})`);
 
-        // Handle pagination via Link header
-        const linkHeader = response.headers.link;
-        url = this.extractNextUrl(linkHeader);
+        // Check for next page
+        const linkHeader = response.headers.link || response.headers['link'];
+        const nextUrl = this.extractNextUrl(linkHeader);
 
-        // Rate limiting
-        if (url) {
-          await new Promise(r => setTimeout(r, 200));
+        if (nextUrl) {
+          console.log(`[ShopifyREST] Next page URL found`);
+          url = nextUrl;
+          // Rate limiting between pages
+          await new Promise(r => setTimeout(r, 250));
+        } else {
+          console.log(`[ShopifyREST] No more pages`);
+          url = null;
         }
       } catch (error) {
         console.error(`[ShopifyREST] Error on page ${pageCount}:`, error.message);
+        if (error.response?.status === 429) {
+          console.log('[ShopifyREST] Rate limited, waiting 2 seconds...');
+          await new Promise(r => setTimeout(r, 2000));
+          continue; // Retry same page
+        }
         break;
       }
     }
 
-    console.log(`[ShopifyREST] COMPLETE: ${allOrders.length} orders from ${startStr} to ${endStr}`);
+    if (pageCount >= maxPages) {
+      console.warn(`[ShopifyREST] WARNING: Hit max pages limit (${maxPages})`);
+    }
+
+    // Calculate total for logging
+    const totalSales = allOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+
+    console.log(`[ShopifyREST] ========================================`);
+    console.log(`[ShopifyREST] COMPLETE: ${allOrders.length} orders, ₪${Math.round(totalSales).toLocaleString()}`);
+    console.log(`[ShopifyREST] ========================================`);
 
     // Cache the result
     cache.set(cacheKey, allOrders, TTL.ORDERS);
@@ -182,14 +231,27 @@ class ShopifyREST {
   }
 
   /**
+   * Get last year's orders
+   * NOTE: Requires read_all_orders scope for orders older than 60 days
+   */
+  async getOrdersLastYear() {
+    const now = new Date();
+    const startOfLastYear = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0);
+    const endOfLastYear = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
+    return this.getOrders(startOfLastYear, endOfLastYear);
+  }
+
+  /**
    * Calculate stats from orders array
    */
   calculateStats(orders) {
     const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const subtotalSales = orders.reduce((sum, o) => sum + parseFloat(o.subtotal_price || 0), 0);
     const totalDiscounts = orders.reduce((sum, o) => {
       const discounts = o.total_discounts ? parseFloat(o.total_discounts) : 0;
       return sum + discounts;
     }, 0);
+    const totalTax = orders.reduce((sum, o) => sum + parseFloat(o.total_tax || 0), 0);
     const orderCount = orders.length;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
 
@@ -209,7 +271,10 @@ class ShopifyREST {
 
     return {
       totalSales: Math.round(totalSales),
+      subtotalSales: Math.round(subtotalSales),
       totalDiscounts: Math.round(totalDiscounts),
+      totalTax: Math.round(totalTax),
+      grossSales: Math.round(subtotalSales + totalDiscounts), // Before discounts
       orderCount,
       avgOrderValue: Math.round(avgOrderValue),
       uniqueCustomers,
@@ -287,7 +352,7 @@ class ShopifyREST {
   /**
    * Get top customers from orders
    */
-  getTopCustomers(orders, limit = 10) {
+  getTopCustomersFromOrders(orders, limit = 10) {
     const customerStats = {};
 
     orders.forEach(order => {
@@ -297,15 +362,22 @@ class ShopifyREST {
       if (!customerStats[customerId]) {
         customerStats[customerId] = {
           id: customerId,
-          name: `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'Guest',
+          name: `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'לקוח',
           email: order.customer.email,
+          phone: order.customer.phone,
           orderCount: 0,
-          totalSpent: 0
+          totalSpent: 0,
+          lastOrderDate: null
         };
       }
 
       customerStats[customerId].orderCount += 1;
       customerStats[customerId].totalSpent += parseFloat(order.total_price || 0);
+
+      const orderDate = new Date(order.created_at);
+      if (!customerStats[customerId].lastOrderDate || orderDate > new Date(customerStats[customerId].lastOrderDate)) {
+        customerStats[customerId].lastOrderDate = order.created_at;
+      }
     });
 
     // Sort by total spent and return top N
@@ -316,6 +388,116 @@ class ShopifyREST {
         ...c,
         totalSpent: Math.round(c.totalSpent)
       }));
+  }
+
+  /**
+   * Get all customers from REST API
+   */
+  async getCustomers(limit = 250) {
+    this.ensureInitialized();
+
+    const cacheKey = 'shopify_rest_customers';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log(`[ShopifyREST] Cache hit for customers (${cached.length})`);
+      return cached;
+    }
+
+    const allCustomers = [];
+    let url = `/customers.json?limit=${limit}`;
+    let pageCount = 0;
+    const maxPages = 50;
+
+    console.log('[ShopifyREST] Fetching customers...');
+
+    while (url && pageCount < maxPages) {
+      pageCount++;
+      try {
+        const response = pageCount === 1
+          ? await this.client.get(url)
+          : await axios.get(url, {
+              headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+              timeout: 30000
+            });
+
+        const customers = response.data.customers || [];
+        allCustomers.push(...customers);
+
+        console.log(`[ShopifyREST] Customers page ${pageCount}: ${customers.length} (total: ${allCustomers.length})`);
+
+        const linkHeader = response.headers.link || response.headers['link'];
+        url = this.extractNextUrl(linkHeader);
+
+        if (url) {
+          await new Promise(r => setTimeout(r, 250));
+        }
+      } catch (error) {
+        console.error(`[ShopifyREST] Error fetching customers:`, error.message);
+        break;
+      }
+    }
+
+    console.log(`[ShopifyREST] Total customers: ${allCustomers.length}`);
+
+    // Cache for 10 minutes
+    cache.set(cacheKey, allCustomers, TTL.CUSTOMERS);
+
+    return allCustomers;
+  }
+
+  /**
+   * Get all products from REST API
+   */
+  async getProducts(limit = 250) {
+    this.ensureInitialized();
+
+    const cacheKey = 'shopify_rest_products';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log(`[ShopifyREST] Cache hit for products (${cached.length})`);
+      return cached;
+    }
+
+    const allProducts = [];
+    let url = `/products.json?limit=${limit}`;
+    let pageCount = 0;
+    const maxPages = 50;
+
+    console.log('[ShopifyREST] Fetching products...');
+
+    while (url && pageCount < maxPages) {
+      pageCount++;
+      try {
+        const response = pageCount === 1
+          ? await this.client.get(url)
+          : await axios.get(url, {
+              headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+              timeout: 30000
+            });
+
+        const products = response.data.products || [];
+        allProducts.push(...products);
+
+        console.log(`[ShopifyREST] Products page ${pageCount}: ${products.length} (total: ${allProducts.length})`);
+
+        const linkHeader = response.headers.link || response.headers['link'];
+        url = this.extractNextUrl(linkHeader);
+
+        if (url) {
+          await new Promise(r => setTimeout(r, 250));
+        }
+      } catch (error) {
+        console.error(`[ShopifyREST] Error fetching products:`, error.message);
+        break;
+      }
+    }
+
+    console.log(`[ShopifyREST] Total products: ${allProducts.length}`);
+
+    // Cache for 10 minutes
+    cache.set(cacheKey, allProducts, TTL.PRODUCTS);
+
+    return allProducts;
   }
 
   /**
@@ -361,6 +543,72 @@ class ShopifyREST {
       console.error('[ShopifyREST] Error getting product count:', error.message);
       return 0;
     }
+  }
+
+  /**
+   * Get order count for date range
+   */
+  async getOrderCount(startDate, endDate) {
+    this.ensureInitialized();
+
+    try {
+      const params = new URLSearchParams({
+        status: 'any',
+        created_at_min: this.formatDateForAPI(startDate),
+        created_at_max: this.formatDateForAPI(endDate, true)
+      });
+
+      const response = await this.client.get(`/orders/count.json?${params.toString()}`);
+      return response.data.count;
+    } catch (error) {
+      console.error('[ShopifyREST] Error getting order count:', error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Debug: Get pagination info for a date range
+   */
+  async debugOrders(startDate, endDate) {
+    this.ensureInitialized();
+
+    const result = {
+      dateRange: {
+        start: startDate.toISOString(),
+        end: endDate.toISOString()
+      },
+      orderCount: 0,
+      pages: [],
+      totalFetched: 0,
+      totalSales: 0
+    };
+
+    try {
+      // Get count first
+      result.orderCount = await this.getOrderCount(startDate, endDate);
+
+      // Fetch orders and log each page
+      const orders = await this.getOrders(startDate, endDate);
+      result.totalFetched = orders.length;
+      result.totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+
+      // Sample of orders
+      result.sampleOrders = orders.slice(0, 5).map(o => ({
+        name: o.name,
+        created_at: o.created_at,
+        total: o.total_price
+      }));
+
+      result.match = result.orderCount === result.totalFetched;
+      result.message = result.match
+        ? 'All orders fetched successfully'
+        : `WARNING: Count says ${result.orderCount} but only fetched ${result.totalFetched}`;
+
+    } catch (error) {
+      result.error = error.message;
+    }
+
+    return result;
   }
 }
 

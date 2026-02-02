@@ -1611,4 +1611,244 @@ router.get('/stats/all', async (req, res) => {
   }
 });
 
+// ==========================================
+// DEBUG ENDPOINTS - For diagnosing issues
+// ==========================================
+
+/**
+ * GET /api/shopify/debug/last-month
+ * Debug: Check last month's data - count vs fetched
+ */
+router.get('/debug/last-month', async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+    const result = await shopifyRest.debugOrders(startOfLastMonth, endOfLastMonth);
+
+    res.json({
+      success: true,
+      period: 'lastMonth',
+      ...result,
+      stats: shopifyRest.calculateStats(await shopifyRest.getOrders(startOfLastMonth, endOfLastMonth))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/debug/last-year
+ * Debug: Check last year's data access
+ * NOTE: Requires read_all_orders scope for orders > 60 days old
+ */
+router.get('/debug/last-year', async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfLastYear = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0);
+    const endOfLastYear = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
+
+    // First check if we have read_all_orders access
+    const orderCount = await shopifyRest.getOrderCount(startOfLastYear, endOfLastYear);
+
+    const result = {
+      period: 'lastYear',
+      dateRange: {
+        start: startOfLastYear.toISOString(),
+        end: endOfLastYear.toISOString()
+      },
+      expectedOrderCount: orderCount,
+      note: orderCount === 0
+        ? 'WARNING: No orders found. This might mean your access token lacks read_all_orders scope (needed for orders > 60 days old)'
+        : `Found ${orderCount} orders for last year`
+    };
+
+    if (orderCount > 0) {
+      const orders = await shopifyRest.getOrders(startOfLastYear, endOfLastYear);
+      result.actualFetched = orders.length;
+      result.totalSales = Math.round(orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0));
+      result.sampleOrders = orders.slice(0, 3).map(o => ({
+        name: o.name,
+        date: o.created_at,
+        total: o.total_price
+      }));
+    }
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      hint: 'If you get 0 orders for last year, check that your Shopify app has read_all_orders scope'
+    });
+  }
+});
+
+// ==========================================
+// CUSTOMERS & PRODUCTS ENDPOINTS
+// ==========================================
+
+/**
+ * GET /api/shopify/customers
+ * Get all customers with their order stats
+ */
+router.get('/customers', async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+
+    // Get customers from this year's orders (more reliable than customer API)
+    const orders = await shopifyRest.getOrdersThisYear();
+    const customers = shopifyRest.getTopCustomersFromOrders(orders, parseInt(limit));
+
+    // Also get total customer count
+    const totalCount = await shopifyRest.getCustomerCount();
+
+    res.json({
+      success: true,
+      totalCustomers: totalCount,
+      customersWithOrders: customers.length,
+      customers: customers.map(c => ({
+        id: c.id,
+        name: c.name || 'לקוח',
+        email: c.email,
+        phone: c.phone,
+        orderCount: c.orderCount,
+        totalSpent: c.totalSpent,
+        lastOrderDate: c.lastOrderDate
+      }))
+    });
+  } catch (error) {
+    console.error('[API] /customers error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/customers/top
+ * Get top customers by spending
+ */
+router.get('/customers/top', async (req, res) => {
+  try {
+    const { limit = 20, period = 'year' } = req.query;
+
+    let orders;
+    if (period === 'month') {
+      orders = await shopifyRest.getOrdersThisMonth();
+    } else {
+      orders = await shopifyRest.getOrdersThisYear();
+    }
+
+    const topCustomers = shopifyRest.getTopCustomersFromOrders(orders, parseInt(limit));
+
+    res.json({
+      success: true,
+      period,
+      customers: topCustomers
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/products
+ * Get all products
+ */
+router.get('/products', async (req, res) => {
+  try {
+    const products = await shopifyRest.getProducts();
+
+    res.json({
+      success: true,
+      count: products.length,
+      products: products.map(p => ({
+        id: p.id,
+        title: p.title,
+        vendor: p.vendor,
+        product_type: p.product_type,
+        status: p.status,
+        created_at: p.created_at,
+        variants_count: p.variants?.length || 0,
+        images_count: p.images?.length || 0,
+        price: p.variants?.[0]?.price || null
+      }))
+    });
+  } catch (error) {
+    console.error('[API] /products error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/products/top
+ * Get top selling products
+ */
+router.get('/products/top', async (req, res) => {
+  try {
+    const { limit = 20, period = 'month' } = req.query;
+
+    let orders;
+    if (period === 'year') {
+      orders = await shopifyRest.getOrdersThisYear();
+    } else {
+      orders = await shopifyRest.getOrdersThisMonth();
+    }
+
+    const topProducts = shopifyRest.getTopProducts(orders, parseInt(limit));
+
+    res.json({
+      success: true,
+      period,
+      products: topProducts
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/lastMonth
+ * Get last month's stats
+ */
+router.get('/stats/lastMonth', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersLastMonth();
+    const stats = shopifyRest.calculateStats(orders);
+
+    res.json({
+      success: true,
+      period: 'lastMonth',
+      ...stats,
+      ordersList: orders.slice(0, 10).map(o => ({
+        name: o.name,
+        date: o.created_at,
+        total: o.total_price
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/shopify/stats/lastYear
+ * Get last year's stats (requires read_all_orders scope)
+ */
+router.get('/stats/lastYear', async (req, res) => {
+  try {
+    const orders = await shopifyRest.getOrdersLastYear();
+    const stats = shopifyRest.calculateStats(orders);
+
+    res.json({
+      success: true,
+      period: 'lastYear',
+      ...stats,
+      note: orders.length === 0 ? 'No orders found. Check if app has read_all_orders scope.' : null
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
