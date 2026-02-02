@@ -4,6 +4,52 @@
 document.addEventListener('DOMContentLoaded', function() {
   const API_BASE = window.location.origin;
 
+  // Inject loading spinner CSS if not already present
+  if (!document.getElementById('dashboard-spinner-styles')) {
+    const styleSheet = document.createElement('style');
+    styleSheet.id = 'dashboard-spinner-styles';
+    styleSheet.textContent = `
+      .spinner {
+        width: 30px;
+        height: 30px;
+        border: 3px solid var(--border, #333);
+        border-top-color: var(--accent, #d4a853);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 20px;
+        color: var(--text-muted, #888);
+      }
+      .kpi-loading {
+        color: var(--text-muted, #888);
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .period-btn.active {
+        background: var(--accent, #d4a853) !important;
+        color: var(--bg, #000) !important;
+      }
+      .period-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    `;
+    document.head.appendChild(styleSheet);
+  }
+
   // Store for recent posts
   let recentPosts = JSON.parse(localStorage.getItem('recentPosts') || '[]');
   let products = [];
@@ -648,10 +694,41 @@ document.addEventListener('DOMContentLoaded', function() {
   let salesChart = null;
   let currentPeriod = 'month';
   let analyticsSetupDone = false;
+  let isLoadingAnalytics = false;
+
+  // Show loading spinner in KPI cards
+  function showKPILoading() {
+    const el = (id) => document.getElementById(id);
+    const loadingHTML = '<span class="kpi-loading">...</span>';
+    if (el('kpiTodaySales')) el('kpiTodaySales').innerHTML = loadingHTML;
+    if (el('kpiTodayOrders')) el('kpiTodayOrders').innerHTML = loadingHTML;
+    if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').innerHTML = loadingHTML;
+    if (el('kpiAvgOrder')) el('kpiAvgOrder').innerHTML = loadingHTML;
+    if (el('kpiReturningRate')) el('kpiReturningRate').innerHTML = loadingHTML;
+  }
+
+  // Show loading spinner in chart
+  function showChartLoading() {
+    const chartContainer = document.querySelector('#page-shopify-analytics .chart-container');
+    if (chartContainer) {
+      chartContainer.innerHTML = '<div class="loading" style="display: flex; justify-content: center; align-items: center; height: 200px;"><div class="spinner"></div><p style="margin-right: 10px;">טוען נתונים...</p></div>';
+    }
+  }
 
   async function loadMetorikAnalytics(period = currentPeriod) {
+    // Prevent double-loading
+    if (isLoadingAnalytics) {
+      console.log('[Analytics] Already loading, skipping...');
+      return;
+    }
+
+    isLoadingAnalytics = true;
     currentPeriod = period;
     console.log('[Analytics] Loading analytics page, period:', period);
+
+    // IMMEDIATELY show loading states before any async operations
+    showKPILoading();
+    showChartLoading();
 
     // Setup period selector ONCE
     if (!analyticsSetupDone) {
@@ -670,6 +747,8 @@ document.addEventListener('DOMContentLoaded', function() {
       console.log('[Analytics] All data loaded');
     } catch (err) {
       console.error('[Analytics] Error loading data:', err);
+    } finally {
+      isLoadingAnalytics = false;
     }
   }
 
@@ -683,7 +762,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const d = data.data;
         const el = (id) => document.getElementById(id);
 
-        // Update KPI values
+        // Update KPI values with smooth transition
         if (el('kpiTodaySales')) el('kpiTodaySales').textContent = '₪' + Math.round(d.totalSales || d.todaySales || 0).toLocaleString();
         if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = (d.orderCount || d.todayOrders || 0) + ' הזמנות';
         if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').textContent = d.orderCount || d.todayOrders || 0;
@@ -699,9 +778,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         console.log('KPI cards updated successfully');
+      } else {
+        // Show error in KPI cards
+        const el = (id) => document.getElementById(id);
+        const errorText = 'שגיאה';
+        if (el('kpiTodaySales')) el('kpiTodaySales').textContent = errorText;
+        if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = errorText;
       }
     } catch (e) {
       console.error('KPI cards error:', e);
+      // Show error state
+      const el = (id) => document.getElementById(id);
+      if (el('kpiTodaySales')) el('kpiTodaySales').textContent = 'שגיאה';
     }
   }
 
@@ -870,6 +958,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const tbody = document.getElementById('topProductsBody');
     if (!tbody) return;
 
+    // Show loading immediately
+    tbody.innerHTML = '<tr><td colspan="4" class="loading"><div class="spinner"></div></td></tr>';
+
     try {
       const response = await fetch(API_BASE + '/api/shopify/analytics/top-products?limit=8');
       const data = await response.json();
@@ -898,6 +989,9 @@ document.addEventListener('DOMContentLoaded', function() {
   async function loadRecentOrders() {
     const tbody = document.getElementById('recentOrdersBody');
     if (!tbody) return;
+
+    // Show loading immediately
+    tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
 
     try {
       const response = await fetch(API_BASE + '/api/shopify/orders/recent?limit=10');
@@ -936,15 +1030,23 @@ document.addEventListener('DOMContentLoaded', function() {
           const period = btn.dataset.period;
           console.log('[Period] Button clicked:', period);
 
-          // Update active state
+          // Update active state IMMEDIATELY
           analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
 
+          // Show loading states IMMEDIATELY before fetching
+          showKPILoading();
+          showChartLoading();
+
           // Update global state and load data
           currentPeriod = period;
-          loadKPICards(period);
-          loadSalesChart(period);
-          loadTopProductsTable();
+
+          // Load data (async - user sees loading spinner right away)
+          Promise.all([
+            loadKPICards(period),
+            loadSalesChart(period),
+            loadTopProductsTable()
+          ]).catch(err => console.error('Error loading period data:', err));
         }
       };
       console.log('[Setup] Analytics period selector ready');
@@ -960,9 +1062,16 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log('[Period] Custom date:', startDate, '-', endDate);
 
         if (startDate && endDate) {
+          // Show loading IMMEDIATELY
           analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
-          loadSalesChartWithDates(startDate, endDate);
-          loadKPICardsWithDates(startDate, endDate);
+          showKPILoading();
+          showChartLoading();
+
+          // Load data
+          Promise.all([
+            loadSalesChartWithDates(startDate, endDate),
+            loadKPICardsWithDates(startDate, endDate)
+          ]).catch(err => console.error('Error loading custom date data:', err));
         } else {
           alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
@@ -1045,18 +1154,45 @@ document.addEventListener('DOMContentLoaded', function() {
   let customersSortColumn = 'totalSpend';
   let customersSortAsc = false; // false = high to low (default)
   let customersSetupDone = false;
+  let isLoadingCustomers = false;
+
+  // Show loading in customer stats
+  function showCustomerStatsLoading() {
+    const el = (id) => document.getElementById(id);
+    const loadingHTML = '...';
+    if (el('statTotalCustomers')) el('statTotalCustomers').textContent = loadingHTML;
+    if (el('statNewCustomers')) el('statNewCustomers').textContent = loadingHTML;
+    if (el('statReturningRate')) el('statReturningRate').textContent = loadingHTML;
+    if (el('statAvgLTV')) el('statAvgLTV').textContent = loadingHTML;
+  }
 
   async function loadCustomersPage() {
+    if (isLoadingCustomers) return;
+    isLoadingCustomers = true;
+
     console.log('[Customers] Loading customers page');
+
+    // Show loading IMMEDIATELY
+    showCustomerStatsLoading();
+    const tbody = document.getElementById('topCustomersBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
+
     if (!customersSetupDone) {
       setupCustomersPeriodSelector();
       setupCustomersSearch();
       setupCustomersSorting();
       customersSetupDone = true;
     }
+
     // Load data with current period
-    await loadCustomerStatsFiltered(customersPeriod);
-    await loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
+    try {
+      await Promise.all([
+        loadCustomerStatsFiltered(customersPeriod),
+        loadTopCustomersFiltered(customersPeriod, customersSearchTerm)
+      ]);
+    } finally {
+      isLoadingCustomers = false;
+    }
   }
 
   async function loadCustomerStatsFiltered(period = customersPeriod) {
@@ -1234,14 +1370,21 @@ document.addEventListener('DOMContentLoaded', function() {
         const period = btn.dataset.period;
         console.log('[Customers] Period clicked:', period);
 
-        // Update active state
+        // Update active state IMMEDIATELY
         selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
+        // Show loading IMMEDIATELY
+        showCustomerStatsLoading();
+        const tbody = document.getElementById('topCustomersBody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
+
         // Update global state and reload data
         customersPeriod = period;
-        loadCustomerStatsFiltered(period);
-        loadTopCustomersFiltered(period, customersSearchTerm);
+        Promise.all([
+          loadCustomerStatsFiltered(period),
+          loadTopCustomersFiltered(period, customersSearchTerm)
+        ]).catch(err => console.error('Error loading customer data:', err));
       }
     };
 
@@ -1328,16 +1471,37 @@ document.addEventListener('DOMContentLoaded', function() {
   let productsPeriod = 'month';
   let productsSearchTerm = '';
   let productsSetupDone = false;
+  let isLoadingProducts = false;
+
+  // Show loading in product lists
+  function showProductsLoading() {
+    const qtyContainer = document.getElementById('topProductsQuantity');
+    const revContainer = document.getElementById('topProductsRevenue');
+    const loadingHTML = '<div class="loading" style="padding: 20px; text-align: center;"><div class="spinner"></div></div>';
+    if (qtyContainer) qtyContainer.innerHTML = loadingHTML;
+    if (revContainer) revContainer.innerHTML = loadingHTML;
+  }
 
   async function loadTopProducts() {
+    if (isLoadingProducts) return;
+    isLoadingProducts = true;
+
     console.log('[Products] Loading products page');
-    await loadTopProductsFiltered();
-    if (!productsSetupDone) {
-      setupProductsPeriodSelector();
-      setupProductsSearch();
-      productsSetupDone = true;
+
+    // Show loading IMMEDIATELY
+    showProductsLoading();
+
+    try {
+      await loadTopProductsFiltered();
+      if (!productsSetupDone) {
+        setupProductsPeriodSelector();
+        setupProductsSearch();
+        productsSetupDone = true;
+      }
+      loadLowStockProducts();
+    } finally {
+      isLoadingProducts = false;
     }
-    loadLowStockProducts();
   }
 
   async function loadTopProductsFiltered(period = productsPeriod, search = productsSearchTerm) {
@@ -1448,12 +1612,16 @@ document.addEventListener('DOMContentLoaded', function() {
         const period = btn.dataset.period;
         console.log('[Products] Period clicked:', period);
 
-        // Update active state
+        // Update active state IMMEDIATELY
         selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
+        // Show loading IMMEDIATELY
+        showProductsLoading();
+
         productsPeriod = period;
-        loadTopProductsFiltered(productsPeriod, productsSearchTerm);
+        loadTopProductsFiltered(productsPeriod, productsSearchTerm)
+          .catch(err => console.error('Error loading products:', err));
       }
     };
 

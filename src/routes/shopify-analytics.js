@@ -5,10 +5,78 @@ const shopifyService = require('../services/shopify');
 const router = express.Router();
 
 // ==========================================
-// RATE LIMITING & CACHING FOR SHOPIFY API
+// SMART CACHING SYSTEM
 // ==========================================
 
-// Cache storage with 5 minute TTL
+// Cache storage with period-specific caching
+const dataCache = new Map();
+const CACHE_TTL = {
+  summary: 5 * 60 * 1000,      // 5 minutes for summary stats
+  salesChart: 5 * 60 * 1000,   // 5 minutes for charts
+  topProducts: 10 * 60 * 1000, // 10 minutes for top products
+  topCustomers: 10 * 60 * 1000,// 10 minutes for customers
+  recentOrders: 2 * 60 * 1000, // 2 minutes for recent orders
+  discounts: 30 * 60 * 1000,   // 30 minutes for discounts (rarely change)
+};
+
+// Get cache key for period-specific data
+function getCacheKey(type, period, startDate, endDate) {
+  if (startDate && endDate) {
+    return `${type}_custom_${startDate}_${endDate}`;
+  }
+  return `${type}_${period || 'default'}`;
+}
+
+// Check if cache is valid
+function isCacheValid(cacheKey, type) {
+  const cached = dataCache.get(cacheKey);
+  if (!cached) return false;
+  const ttl = CACHE_TTL[type] || 5 * 60 * 1000;
+  return (Date.now() - cached.timestamp) < ttl;
+}
+
+// Get cached data
+function getCache(cacheKey) {
+  const cached = dataCache.get(cacheKey);
+  if (!cached) return null;
+  return {
+    ...cached.data,
+    cached: true,
+    cacheAge: Math.round((Date.now() - cached.timestamp) / 1000) + 's'
+  };
+}
+
+// Set cache data
+function setCache(cacheKey, data) {
+  dataCache.set(cacheKey, {
+    data,
+    timestamp: Date.now()
+  });
+}
+
+// Background refresh - updates cache without blocking response
+async function backgroundRefresh(cacheKey, type, fetchFn) {
+  try {
+    console.log(`[Cache] Background refresh starting for ${cacheKey}`);
+    const freshData = await fetchFn();
+    setCache(cacheKey, freshData);
+    console.log(`[Cache] Background refresh complete for ${cacheKey}`);
+  } catch (error) {
+    console.error(`[Cache] Background refresh failed for ${cacheKey}:`, error.message);
+  }
+}
+
+// Pre-warm cache for common periods on startup
+let cacheWarmedUp = false;
+async function warmUpCache() {
+  if (cacheWarmedUp) return;
+  cacheWarmedUp = true;
+
+  console.log('[Cache] Warming up cache...');
+  // Will be populated on first requests
+}
+
+// Legacy cache object for backward compatibility
 const cache = {
   analytics: { data: null, timestamp: 0 },
   salesChart: { data: null, timestamp: 0 },
@@ -17,18 +85,11 @@ const cache = {
   recentOrders: { data: null, timestamp: 0 },
   discounts: { data: null, timestamp: 0 },
   products: { data: null, timestamp: 0 },
-  TTL: 5 * 60 * 1000 // 5 minutes
+  TTL: 5 * 60 * 1000
 };
 
-// Check if cache is valid
-function isCacheValid(cacheKey) {
-  const cached = cache[cacheKey];
-  return cached.data && (Date.now() - cached.timestamp) < cache.TTL;
-}
-
-// Get cache age in seconds
 function getCacheAge(cacheKey) {
-  return Math.round((Date.now() - cache[cacheKey].timestamp) / 1000) + 's';
+  return Math.round((Date.now() - (cache[cacheKey]?.timestamp || 0)) / 1000) + 's';
 }
 
 // Rate limiter: max 2 requests per second to Shopify
@@ -155,12 +216,18 @@ router.get('/analytics/summary', async (req, res) => {
   try {
     const { startDate, endDate, period } = req.query;
     const { start, end } = getDateRange(startDate, endDate, period || 'month');
+    const cacheKey = getCacheKey('summary', period, startDate, endDate);
+
+    // Check cache first - return immediately if valid
+    if (isCacheValid(cacheKey, 'summary')) {
+      console.log(`[Analytics Summary] Returning cached data for ${cacheKey}`);
+      return res.json(getCache(cacheKey));
+    }
 
     // Log exact dates being used
     console.log(`[Analytics Summary] ========================================`);
-    console.log(`[Analytics Summary] Period: "${period}"`);
+    console.log(`[Analytics Summary] Period: "${period}" (${cacheKey})`);
     console.log(`[Analytics Summary] Date Range: ${formatDateIL(start)} to ${formatDateIL(end)}`);
-    console.log(`[Analytics Summary] ISO Range: ${start.toISOString()} to ${end.toISOString()}`);
 
     // Fetch ALL orders with pagination (no limit - service handles it)
     const orders = await shopifyService.getOrders({
@@ -241,10 +308,22 @@ router.get('/analytics/summary', async (req, res) => {
       }
     };
 
+    // Cache the result
+    setCache(cacheKey, result);
+    console.log(`[Analytics Summary] Cached result for ${cacheKey}`);
+
     res.json(result);
 
   } catch (error) {
     console.error('Analytics summary error:', error.message);
+
+    // Try to return stale cache on error
+    const staleCache = dataCache.get(getCacheKey('summary', req.query.period, req.query.startDate, req.query.endDate));
+    if (staleCache) {
+      console.log('[Analytics Summary] Returning stale cache due to error');
+      return res.json({ ...staleCache.data, cached: true, stale: true });
+    }
+
     res.status(500).json({ error: true, message: error.message });
   }
 });
@@ -254,14 +333,19 @@ router.get('/analytics/sales-chart', async (req, res) => {
   try {
     const { startDate, endDate, period } = req.query;
     const { start, end } = getDateRange(startDate, endDate, period || '30days');
+    const cacheKey = getCacheKey('salesChart', period, startDate, endDate);
 
-    console.log(`[Sales Chart] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
+    // Check cache first
+    if (isCacheValid(cacheKey, 'salesChart')) {
+      console.log(`[Sales Chart] Returning cached data for ${cacheKey}`);
+      return res.json(getCache(cacheKey));
+    }
 
-    // No caching - always fetch fresh data for accurate results
-    // Fetch orders with date filtering at API level
+    console.log(`[Sales Chart] Period: ${period}, Range: ${formatDateIL(start)} to ${formatDateIL(end)}`);
+
+    // Fetch orders with date filtering
     const orders = await shopifyService.getOrders({
       status: 'any',
-      limit: 250,
       created_at_min: start.toISOString(),
       created_at_max: end.toISOString()
     });
@@ -311,10 +395,20 @@ router.get('/analytics/sales-chart', async (req, res) => {
       totalSales: Math.round(orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0))
     };
 
+    // Cache the result
+    setCache(cacheKey, result);
+
     res.json(result);
 
   } catch (error) {
     console.error('Sales chart error:', error.message);
+
+    // Return stale cache on error
+    const staleCache = dataCache.get(getCacheKey('salesChart', req.query.period, req.query.startDate, req.query.endDate));
+    if (staleCache) {
+      return res.json({ ...staleCache.data, cached: true, stale: true });
+    }
+
     res.status(500).json({ error: true, message: error.message });
   }
 });
