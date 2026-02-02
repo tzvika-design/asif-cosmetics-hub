@@ -107,9 +107,10 @@ function getDateRange(startDate, endDate, period) {
       const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
       return { start: weekAgo, end: now };
     case 'month':
-      // Last 30 days
-      const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-      return { start: monthAgo, end: now };
+    case 'thisMonth':
+      // Calendar month-to-date (1st of current month to now)
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { start: monthStart, end: now };
     case '30days':
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
     case '90days':
@@ -123,9 +124,9 @@ function getDateRange(startDate, endDate, period) {
       const yearAgo = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000);
       return { start: yearAgo, end: now };
     default:
-      // Default to last 30 days
-      const defaultStart = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-      return { start: defaultStart, end: now };
+      // Default to calendar month-to-date
+      const defaultMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { start: defaultMonthStart, end: now };
   }
 }
 
@@ -141,13 +142,7 @@ router.get('/analytics/summary', async (req, res) => {
 
     console.log(`[Analytics Summary] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
 
-    // Check cache only for default requests
-    const cacheKey = 'analytics_' + (period || 'default');
-    if (!startDate && !endDate && isCacheValid('analytics')) {
-      console.log('Returning cached analytics summary');
-      return res.json({ ...cache.analytics.data, cached: true, cacheAge: getCacheAge('analytics') });
-    }
-
+    // No caching for period-specific requests - always fetch fresh data
     // Fetch orders with date filtering at API level
     const orders = await shopifyService.getOrders({
       status: 'any',
@@ -158,7 +153,7 @@ router.get('/analytics/summary', async (req, res) => {
 
     const customers = await shopifyService.getCustomers({ limit: 250 });
 
-    console.log(`[Analytics Summary] Fetched ${orders.length} orders for period`);
+    console.log(`[Analytics Summary] Fetched ${orders.length} orders for period ${period}`);
 
     // Calculate metrics from orders (already filtered by API)
     const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
@@ -176,7 +171,7 @@ router.get('/analytics/summary', async (req, res) => {
     const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
     const returningRate = totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0;
 
-    // Today's specific stats (need separate query)
+    // Today's specific stats
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayOrders = orders.filter(o => new Date(o.created_at) >= today);
@@ -199,19 +194,10 @@ router.get('/analytics/summary', async (req, res) => {
       }
     };
 
-    // Update cache for default requests
-    if (!startDate && !endDate) {
-      cache.analytics.data = result;
-      cache.analytics.timestamp = Date.now();
-    }
-
     res.json(result);
 
   } catch (error) {
     console.error('Analytics summary error:', error.message);
-    if (cache.analytics.data) {
-      return res.json({ ...cache.analytics.data, cached: true, stale: true });
-    }
     res.status(500).json({ error: true, message: error.message });
   }
 });
@@ -224,11 +210,7 @@ router.get('/analytics/sales-chart', async (req, res) => {
 
     console.log(`[Sales Chart] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
 
-    if (!startDate && !endDate && isCacheValid('salesChart')) {
-      console.log('Returning cached sales chart');
-      return res.json({ ...cache.salesChart.data, cached: true, cacheAge: getCacheAge('salesChart') });
-    }
-
+    // No caching - always fetch fresh data for accurate results
     // Fetch orders with date filtering at API level
     const orders = await shopifyService.getOrders({
       status: 'any',
@@ -282,18 +264,10 @@ router.get('/analytics/sales-chart', async (req, res) => {
       totalSales: Math.round(orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0))
     };
 
-    if (!startDate && !endDate) {
-      cache.salesChart.data = result;
-      cache.salesChart.timestamp = Date.now();
-    }
-
     res.json(result);
 
   } catch (error) {
     console.error('Sales chart error:', error.message);
-    if (cache.salesChart.data) {
-      return res.json({ ...cache.salesChart.data, cached: true, stale: true });
-    }
     res.status(500).json({ error: true, message: error.message });
   }
 });
