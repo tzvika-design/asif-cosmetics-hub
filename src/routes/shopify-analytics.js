@@ -1815,6 +1815,59 @@ router.get('/debug/last-year-full', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/shopify/test/year2025
+ * Test: Fetch ALL 2025 orders using shopifyRest.getOrders (clears cache first)
+ */
+router.get('/test/year2025', async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    // Clear cache for this date range
+    cache.clearPattern('shopify_rest_orders_2025');
+
+    // Fetch all 2025 orders
+    const start = new Date('2025-01-01T00:00:00');
+    const end = new Date('2025-12-31T23:59:59');
+
+    console.log('[Test] Fetching all 2025 orders...');
+    const orders = await shopifyRest.getOrders(start, end);
+    const elapsed = Date.now() - startTime;
+
+    // Calculate stats
+    const stats = shopifyRest.calculateStats(orders);
+
+    // Monthly breakdown
+    const monthly = {};
+    orders.forEach(o => {
+      const m = o.created_at.substring(0, 7);
+      if (!monthly[m]) monthly[m] = { orders: 0, sales: 0 };
+      monthly[m].orders++;
+      monthly[m].sales += parseFloat(o.total_price || 0);
+    });
+
+    res.json({
+      success: true,
+      year: 2025,
+      totalOrders: orders.length,
+      totalSales: stats.totalSales,
+      avgOrderValue: stats.avgOrderValue,
+      elapsedMs: elapsed,
+      elapsedSec: (elapsed / 1000).toFixed(1),
+      monthlyBreakdown: Object.entries(monthly)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([m, s]) => ({ month: m, orders: s.orders, sales: Math.round(s.sales) }))
+    });
+
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message,
+      elapsedMs: Date.now() - startTime
+    });
+  }
+});
+
 // ==========================================
 // CUSTOMERS & PRODUCTS ENDPOINTS
 // ==========================================

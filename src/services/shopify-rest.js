@@ -119,14 +119,11 @@ class ShopifyREST {
 
     let url = `/orders.json?${params.toString()}`;
 
-    console.log(`[ShopifyREST] ========================================`);
     console.log(`[ShopifyREST] Fetching orders: ${startStr} to ${endStr}`);
-    console.log(`[ShopifyREST] Initial URL: ${url}`);
 
     while (url && pageCount < maxPages) {
       pageCount++;
       try {
-        console.log(`[ShopifyREST] Page ${pageCount}...`);
 
         // For subsequent pages, url is a full URL
         const response = pageCount === 1
@@ -139,17 +136,18 @@ class ShopifyREST {
         const orders = response.data.orders || [];
         allOrders.push(...orders);
 
-        console.log(`[ShopifyREST] Page ${pageCount}: ${orders.length} orders (running total: ${allOrders.length})`);
+        if (pageCount % 10 === 0) {
+          console.log(`[ShopifyREST] Page ${pageCount}: ${allOrders.length} orders so far...`);
+        }
 
         // Check for next page
         const linkHeader = response.headers.link || response.headers['link'];
         const nextUrl = this.extractNextUrl(linkHeader);
 
         if (nextUrl) {
-          console.log(`[ShopifyREST] Next page URL found`);
           url = nextUrl;
-          // Rate limiting between pages
-          await new Promise(r => setTimeout(r, 250));
+          // Minimal delay - Shopify allows 2 requests/second
+          await new Promise(r => setTimeout(r, 100));
         } else {
           console.log(`[ShopifyREST] No more pages`);
           url = null;
@@ -169,12 +167,7 @@ class ShopifyREST {
       console.warn(`[ShopifyREST] WARNING: Hit max pages limit (${maxPages})`);
     }
 
-    // Calculate total for logging
-    const totalSales = allOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
-
-    console.log(`[ShopifyREST] ========================================`);
-    console.log(`[ShopifyREST] COMPLETE: ${allOrders.length} orders, ₪${Math.round(totalSales).toLocaleString()}`);
-    console.log(`[ShopifyREST] ========================================`);
+    console.log(`[ShopifyREST] Done: ${allOrders.length} orders in ${pageCount} pages`);
 
     // Cache the result
     cache.set(cacheKey, allOrders, TTL.ORDERS);
