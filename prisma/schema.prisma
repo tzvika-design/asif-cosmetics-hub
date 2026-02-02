@@ -1,0 +1,167 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Orders synced from Shopify
+model Order {
+  id              Int       @id @default(autoincrement())
+  shopifyOrderId  String    @unique
+  orderNumber     String?
+  orderDate       DateTime
+  totalPrice      Decimal   @db.Decimal(10, 2)
+  subtotalPrice   Decimal   @db.Decimal(10, 2)
+  discountCode    String?
+  discountAmount  Decimal?  @db.Decimal(10, 2)
+  customerId      String?
+  customerEmail   String?
+  customerName    String?
+  isNewCustomer   Boolean   @default(false)
+  financialStatus String?
+  fulfillmentStatus String?
+  lineItems       Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([orderDate])
+  @@index([customerId])
+  @@index([discountCode])
+}
+
+// Pre-calculated daily stats for fast queries
+model DailyStat {
+  id                 Int       @id @default(autoincrement())
+  date               DateTime  @unique @db.Date
+  totalSales         Decimal   @db.Decimal(12, 2)
+  grossSales         Decimal   @db.Decimal(12, 2)
+  totalDiscounts     Decimal   @db.Decimal(12, 2)
+  orderCount         Int
+  newCustomers       Int
+  returningCustomers Int
+  avgOrderValue      Decimal   @db.Decimal(10, 2)
+  topProducts        Json?
+  updatedAt          DateTime  @updatedAt
+
+  @@index([date])
+}
+
+// Agent activity logs - the "memory" of AI agents
+model AgentLog {
+  id             Int       @id @default(autoincrement())
+  agentName      String    // Sales, Marketing, Inventory, Coupon
+  actionType     String    // Analysis, Recommendation, Alert
+  reasoning      String    @db.Text // The "why" behind the action (AI transparency)
+  recommendation String?   @db.Text
+  data           Json?     // Raw data snapshot
+  confidence     Int?      // 0-100 confidence score
+  status         String    @default("pending") // pending, approved, rejected
+  approvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([agentName])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Coupon analytics
+model CouponStat {
+  id                     Int       @id @default(autoincrement())
+  shopifyDiscountId      String?   @unique
+  couponCode             String    @unique
+  couponTitle            String?
+  couponType             String    // Amount off order, Amount off products, Free shipping, BXGY
+  discountValue          String    // e.g., "10%" or "50 ILS"
+  valueAmount            Decimal?  @db.Decimal(10, 2)
+  valueType              String?   // percentage, fixed_amount
+  timesUsed              Int       @default(0)
+  totalDiscountGiven     Decimal   @default(0) @db.Decimal(12, 2)
+  totalRevenueGenerated  Decimal   @default(0) @db.Decimal(12, 2)
+  estimatedProfit        Decimal?  @db.Decimal(12, 2)
+  status                 String    // Active, Expired, Scheduled
+  isActive               Boolean   @default(true)
+  isBleedingMoney        Boolean   @default(false) // AI flag for unprofitable coupons
+  startsAt               DateTime?
+  endsAt                 DateTime?
+  lastUsedAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([couponCode])
+  @@index([status])
+  @@index([isBleedingMoney])
+}
+
+// Customer aggregated data
+model CustomerStat {
+  id                Int       @id @default(autoincrement())
+  shopifyCustomerId String    @unique
+  email             String?
+  firstName         String?
+  lastName          String?
+  totalOrders       Int       @default(0)
+  totalSpent        Decimal   @default(0) @db.Decimal(12, 2)
+  avgOrderValue     Decimal   @default(0) @db.Decimal(10, 2)
+  firstOrderDate    DateTime?
+  lastOrderDate     DateTime?
+  isReturning       Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([email])
+  @@index([totalSpent])
+}
+
+// Product sales aggregation
+model ProductStat {
+  id                Int       @id @default(autoincrement())
+  shopifyProductId  String    @unique
+  title             String
+  imageUrl          String?
+  totalQuantitySold Int       @default(0)
+  totalRevenue      Decimal   @default(0) @db.Decimal(12, 2)
+  lastSoldAt        DateTime?
+  currentInventory  Int?
+  avgDailySales     Decimal?  @db.Decimal(10, 2)
+  daysUntilStockout Int?
+  updatedAt         DateTime  @updatedAt
+
+  @@index([totalRevenue])
+  @@index([totalQuantitySold])
+}
+
+// Track sync operations
+model SyncLog {
+  id            Int       @id @default(autoincrement())
+  syncType      String    // orders, customers, coupons, products
+  recordsSynced Int       @default(0)
+  startedAt     DateTime
+  completedAt   DateTime?
+  status        String    // running, completed, failed
+  errorMessage  String?
+  metadata      Json?
+
+  @@index([syncType])
+  @@index([status])
+}
+
+// Agent configuration
+model AgentConfig {
+  id          Int       @id @default(autoincrement())
+  agentName   String    @unique
+  displayName String?
+  description String?
+  isEnabled   Boolean   @default(true)
+  runInterval Int       @default(60) // minutes
+  lastRunAt   DateTime?
+  nextRunAt   DateTime?
+  settings    Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
