@@ -639,39 +639,164 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
-  // COUPONS
+  // COUPONS WITH TRACKING
   // ==========================================
+
+  // Load tracked coupons from localStorage
+  let trackedCoupons = JSON.parse(localStorage.getItem('trackedCoupons') || '[]');
+  let allCoupons = [];
+
+  function saveTrackedCoupons() {
+    localStorage.setItem('trackedCoupons', JSON.stringify(trackedCoupons));
+  }
+
+  function isTracked(couponId) {
+    return trackedCoupons.some(c => c.id === couponId);
+  }
+
+  function toggleTrackCoupon(coupon) {
+    if (isTracked(coupon.id)) {
+      trackedCoupons = trackedCoupons.filter(c => c.id !== coupon.id);
+    } else {
+      trackedCoupons.push({
+        id: coupon.id,
+        title: coupon.title,
+        value: coupon.value,
+        valueType: coupon.valueType,
+        totalUsage: coupon.totalUsage || 0
+      });
+    }
+    saveTrackedCoupons();
+    renderTrackedCoupons();
+    renderCouponsList(document.getElementById('couponSearch')?.value || '');
+  }
+
+  function removeTrackedCoupon(couponId) {
+    trackedCoupons = trackedCoupons.filter(c => c.id !== couponId);
+    saveTrackedCoupons();
+    renderTrackedCoupons();
+    renderCouponsList(document.getElementById('couponSearch')?.value || '');
+  }
+
+  function renderTrackedCoupons() {
+    const container = document.getElementById('trackedCouponsList');
+    if (!container) return;
+
+    // Update tracked coupons with latest data from allCoupons
+    trackedCoupons = trackedCoupons.map(tc => {
+      const latest = allCoupons.find(c => c.id === tc.id);
+      return latest ? { ...tc, totalUsage: latest.totalUsage || 0 } : tc;
+    });
+    saveTrackedCoupons();
+
+    if (trackedCoupons.length === 0) {
+      container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">לחץ על ⭐ כדי להוסיף קופונים למעקב</p>';
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th><th></th></tr></thead>
+        <tbody>
+          ${trackedCoupons.map(c => `
+            <tr>
+              <td><strong>⭐ ${c.title}</strong></td>
+              <td>${c.valueType === 'percentage' ? c.value + '%' : '₪' + Math.abs(c.value)}</td>
+              <td>${c.totalUsage}</td>
+              <td>
+                <button class="btn-remove-coupon" data-id="${c.id}" title="הסר ממעקב"
+                  style="background: none; border: none; color: var(--error); cursor: pointer; font-size: 1.2rem;">
+                  ✕
+                </button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+    // Add remove button handlers
+    container.querySelectorAll('.btn-remove-coupon').forEach(btn => {
+      btn.onclick = () => removeTrackedCoupon(parseInt(btn.dataset.id));
+    });
+  }
+
+  function renderCouponsList(searchTerm = '') {
+    const container = document.getElementById('couponsList');
+    if (!container) return;
+
+    let filtered = allCoupons;
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      filtered = allCoupons.filter(c => c.title.toLowerCase().includes(term));
+    }
+
+    if (filtered.length === 0) {
+      container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">לא נמצאו קופונים</p>';
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th></th><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th></tr></thead>
+        <tbody>
+          ${filtered.map(d => `
+            <tr>
+              <td>
+                <button class="btn-track-coupon" data-id="${d.id}" title="${isTracked(d.id) ? 'הסר ממעקב' : 'הוסף למעקב'}"
+                  style="background: none; border: none; cursor: pointer; font-size: 1.2rem; color: ${isTracked(d.id) ? '#ffc107' : 'var(--text-muted)'};">
+                  ${isTracked(d.id) ? '⭐' : '☆'}
+                </button>
+              </td>
+              <td><strong>${d.title}</strong></td>
+              <td>${d.valueType === 'percentage' ? d.value + '%' : '₪' + Math.abs(d.value)}</td>
+              <td>${d.totalUsage}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+
+    // Add track button handlers
+    container.querySelectorAll('.btn-track-coupon').forEach(btn => {
+      btn.onclick = () => {
+        const couponId = parseInt(btn.dataset.id);
+        const coupon = allCoupons.find(c => c.id === couponId);
+        if (coupon) toggleTrackCoupon(coupon);
+      };
+    });
+  }
 
   async function loadCoupons() {
     const container = document.getElementById('couponsList');
     if (!container) return;
 
+    // Render tracked coupons first (from localStorage)
+    renderTrackedCoupons();
+
     try {
-      const response = await fetch(API_BASE + '/api/shopify/discounts');
+      const response = await fetch(API_BASE + '/api/shopify/discounts?limit=50');
       const data = await response.json();
 
       if (data.success) {
-        const discounts = data.data;
+        allCoupons = data.data.slice(0, 50); // Limit to 50 coupons
 
-        if (discounts.length === 0) {
+        if (allCoupons.length === 0) {
           container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין קופונים פעילים</p>';
           return;
         }
 
-        container.innerHTML = `
-          <table class="data-table">
-            <thead><tr><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th></tr></thead>
-            <tbody>
-              ${discounts.map(d => `
-                <tr>
-                  <td><strong>${d.title}</strong></td>
-                  <td>${d.valueType === 'percentage' ? d.value + '%' : '₪' + Math.abs(d.value)}</td>
-                  <td>${d.totalUsage}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `;
+        // Update tracked coupons with latest data
+        renderTrackedCoupons();
+        renderCouponsList();
+
+        // Setup search handler
+        const searchInput = document.getElementById('couponSearch');
+        if (searchInput) {
+          searchInput.oninput = function() {
+            renderCouponsList(this.value);
+          };
+        }
       }
     } catch (e) {
       container.innerHTML = '<p style="color: var(--error); text-align: center;">שגיאה בטעינת קופונים</p>';

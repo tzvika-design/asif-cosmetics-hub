@@ -988,14 +988,35 @@
 
       <!-- ==================== SHOPIFY COUPONS PAGE ==================== -->
       <div class="page" id="page-shopify-coupons">
+        <!-- Tracked Coupons Panel -->
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">🎟️ קודי הנחה</span>
+            <span class="panel-title">⭐ הקופונים שלי</span>
           </div>
-          <div class="panel-content" id="couponsList">
-            <div class="loading">
-              <div class="spinner"></div>
-              <p>טוען קופונים...</p>
+          <div class="panel-content" id="trackedCouponsList">
+            <p style="color: var(--text-muted); text-align: center;">
+              לחץ על ⭐ כדי להוסיף קופונים למעקב
+            </p>
+          </div>
+        </div>
+
+        <!-- All Coupons Panel with Search -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">🎟️ כל הקופונים</span>
+          </div>
+          <div class="panel-content">
+            <!-- Search Box -->
+            <div style="margin-bottom: 15px;">
+              <input type="text" id="couponSearch" placeholder="🔍 חפש קופון..."
+                style="width: 100%; padding: 12px 15px; border: 1px solid var(--border); border-radius: 8px; background: var(--input-bg); color: var(--text); font-size: 1rem;">
+            </div>
+
+            <div id="couponsList">
+              <div class="loading">
+                <div class="spinner"></div>
+                <p>טוען קופונים...</p>
+              </div>
             </div>
           </div>
         </div>
