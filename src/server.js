@@ -9,6 +9,7 @@ const path = require('path');
 const apiRoutes = require('./routes/api');
 const agentRoutes = require('./routes/agents');
 const webhookRoutes = require('./routes/webhooks');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,6 +33,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/api', apiRoutes);
+app.use('/api/chat', chatRoutes);
 app.use('/agents', agentRoutes);
 app.use('/webhooks', webhookRoutes);
 
@@ -43,6 +45,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       api: '/api',
+      chat: '/api/chat',
       agents: '/agents',
       webhooks: '/webhooks'
     }
