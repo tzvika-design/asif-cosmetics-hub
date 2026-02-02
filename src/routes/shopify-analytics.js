@@ -1706,7 +1706,7 @@ router.get('/debug/last-year', async (req, res) => {
 
 /**
  * GET /api/shopify/debug/last-year-full
- * Fetch ALL 2025 orders with pagination - may take a while
+ * Fetch 2025 orders with pagination - limited to 5 pages to avoid timeout
  */
 router.get('/debug/last-year-full', async (req, res) => {
   const axios = require('axios');
@@ -1719,18 +1719,37 @@ router.get('/debug/last-year-full', async (req, res) => {
   const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
   const headers = { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN };
 
+  // First get total count
+  let totalCount = 0;
+  try {
+    const countRes = await axios.get(`${baseUrl}/orders/count.json`, {
+      headers,
+      params: {
+        status: 'any',
+        created_at_min: '2025-01-01T00:00:00+02:00',
+        created_at_max: '2025-12-31T23:59:59+02:00'
+      },
+      timeout: 10000
+    });
+    totalCount = countRes.data.count;
+    console.log(`[Debug] Total 2025 orders: ${totalCount}`);
+  } catch (e) {
+    console.log('[Debug] Could not get count:', e.message);
+  }
+
+  const maxPages = parseInt(req.query.pages) || 5; // Default 5 pages, can override with ?pages=10
   const allOrders = [];
   let pageCount = 0;
   let url = `${baseUrl}/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00%2B02:00&created_at_max=2025-12-31T23:59:59%2B02:00`;
 
-  console.log('[Debug] Fetching ALL 2025 orders...');
+  console.log(`[Debug] Fetching 2025 orders (max ${maxPages} pages)...`);
 
   try {
-    while (url && pageCount < 100) {
+    while (url && pageCount < maxPages) {
       pageCount++;
-      console.log(`[Debug] Page ${pageCount}...`);
+      console.log(`[Debug] Page ${pageCount}/${maxPages}...`);
 
-      const response = await axios.get(url, { headers, timeout: 30000 });
+      const response = await axios.get(url, { headers, timeout: 15000 });
       const orders = response.data.orders || [];
       allOrders.push(...orders);
 
@@ -1741,8 +1760,8 @@ router.get('/debug/last-year-full', async (req, res) => {
       if (linkHeader && linkHeader.includes('rel="next"')) {
         const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
         url = match ? match[1] : null;
-        if (url) {
-          await new Promise(r => setTimeout(r, 300)); // Rate limiting
+        if (url && pageCount < maxPages) {
+          await new Promise(r => setTimeout(r, 200)); // Rate limiting
         }
       } else {
         url = null;
@@ -1763,29 +1782,26 @@ router.get('/debug/last-year-full', async (req, res) => {
       monthlyStats[month].sales += parseFloat(order.total_price || 0);
     });
 
+    const hasMore = url !== null;
+
     res.json({
       success: true,
       year: 2025,
-      totalOrders: allOrders.length,
+      totalOrdersInShopify: totalCount,
+      ordersFetched: allOrders.length,
       totalSales: Math.round(totalSales),
       totalDiscounts: Math.round(totalDiscounts),
-      avgOrderValue: Math.round(totalSales / allOrders.length),
+      avgOrderValue: allOrders.length > 0 ? Math.round(totalSales / allOrders.length) : 0,
       pagesLoaded: pageCount,
+      hasMorePages: hasMore,
+      note: hasMore ? `Only fetched ${pageCount} pages. Use ?pages=20 for more` : 'All pages fetched',
       monthlyBreakdown: Object.entries(monthlyStats)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([month, stats]) => ({
           month,
           orders: stats.orders,
           sales: Math.round(stats.sales)
-        })),
-      firstOrder: allOrders[allOrders.length - 1] ? {
-        name: allOrders[allOrders.length - 1].name,
-        date: allOrders[allOrders.length - 1].created_at
-      } : null,
-      lastOrder: allOrders[0] ? {
-        name: allOrders[0].name,
-        date: allOrders[0].created_at
-      } : null
+        }))
     });
 
   } catch (error) {
