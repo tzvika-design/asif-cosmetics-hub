@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const shopifyService = require('../services/shopify');
 
 const router = express.Router();
@@ -7,17 +8,33 @@ const router = express.Router();
 // RATE LIMITING & CACHING FOR SHOPIFY API
 // ==========================================
 
-// Cache for discounts (5 minute TTL)
-let discountsCache = {
-  data: null,
-  timestamp: 0,
+// Cache storage with 5 minute TTL
+const cache = {
+  analytics: { data: null, timestamp: 0 },
+  salesChart: { data: null, timestamp: 0 },
+  topProducts: { data: null, timestamp: 0 },
+  topCustomers: { data: null, timestamp: 0 },
+  recentOrders: { data: null, timestamp: 0 },
+  discounts: { data: null, timestamp: 0 },
+  products: { data: null, timestamp: 0 },
   TTL: 5 * 60 * 1000 // 5 minutes
 };
 
-// Rate limiter: max 1 request per second to Shopify (to avoid 429 errors)
+// Check if cache is valid
+function isCacheValid(cacheKey) {
+  const cached = cache[cacheKey];
+  return cached.data && (Date.now() - cached.timestamp) < cache.TTL;
+}
+
+// Get cache age in seconds
+function getCacheAge(cacheKey) {
+  return Math.round((Date.now() - cache[cacheKey].timestamp) / 1000) + 's';
+}
+
+// Rate limiter: max 2 requests per second to Shopify
 const rateLimiter = {
   lastRequestTime: 0,
-  minInterval: 1000, // 1000ms between requests = max 1 per second
+  minInterval: 500, // 500ms between requests = max 2 per second
 
   async wait() {
     const now = Date.now();
@@ -25,7 +42,6 @@ const rateLimiter = {
 
     if (timeSinceLastRequest < this.minInterval) {
       const waitTime = this.minInterval - timeSinceLastRequest;
-      console.log(`Rate limiting: waiting ${waitTime}ms before next Shopify request`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
@@ -41,14 +57,12 @@ async function rateLimitedRequest(requestFn, retries = 2) {
     try {
       return await requestFn();
     } catch (error) {
-      // Handle 429 Too Many Requests
       if (error.response?.status === 429) {
         console.log(`Rate limited (429), waiting 3 seconds before retry ${attempt}/${retries}...`);
         await new Promise(resolve => setTimeout(resolve, 3000));
         if (attempt === retries) throw error;
         continue;
       }
-      // Handle timeout
       if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
         console.log(`Request timeout, retry ${attempt}/${retries}...`);
         if (attempt === retries) throw error;
@@ -63,10 +77,470 @@ async function rateLimitedRequest(requestFn, retries = 2) {
 // Axios config with timeout
 const axiosConfig = (headers) => ({
   headers,
-  timeout: 15000 // 15 second timeout per request
+  timeout: 15000
 });
 
-// GET /api/shopify/analytics - Sales summary
+// Helper: Format date as DD/MM/YYYY (Israeli format)
+function formatDateIL(date) {
+  const d = new Date(date);
+  return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+// Helper: Parse date range params
+function getDateRange(startDate, endDate, period) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (startDate && endDate) {
+    return {
+      start: new Date(startDate),
+      end: new Date(endDate)
+    };
+  }
+
+  switch (period) {
+    case 'today':
+      return { start: today, end: now };
+    case 'week':
+      return { start: new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000), end: now };
+    case 'month':
+      return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+    case '30days':
+      return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+    case '90days':
+      return { start: new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000), end: now };
+    default:
+      return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+  }
+}
+
+// ==========================================
+// API ENDPOINTS
+// ==========================================
+
+// GET /api/shopify/analytics/summary - Main analytics summary
+router.get('/analytics/summary', async (req, res) => {
+  try {
+    const { startDate, endDate, period } = req.query;
+
+    // Check cache
+    if (isCacheValid('analytics') && !startDate && !endDate) {
+      console.log('Returning cached analytics summary');
+      return res.json({ ...cache.analytics.data, cached: true, cacheAge: getCacheAge('analytics') });
+    }
+
+    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
+    const customers = await shopifyService.getCustomers({ limit: 250 });
+
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
+
+    // Filter orders by date range
+    const filteredOrders = orders.filter(o => {
+      const orderDate = new Date(o.created_at);
+      return orderDate >= start && orderDate <= end;
+    });
+
+    // Calculate metrics
+    const totalSales = filteredOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const orderCount = filteredOrders.length;
+    const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
+
+    // Returning customers calculation
+    const customerOrderCounts = {};
+    orders.forEach(o => {
+      if (o.customer?.id) {
+        customerOrderCounts[o.customer.id] = (customerOrderCounts[o.customer.id] || 0) + 1;
+      }
+    });
+    const totalCustomers = Object.keys(customerOrderCounts).length;
+    const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
+    const returningRate = totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0;
+
+    // Today's specific stats
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayOrders = orders.filter(o => new Date(o.created_at) >= today);
+    const todaySales = todayOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+
+    const result = {
+      success: true,
+      data: {
+        totalSales,
+        orderCount,
+        avgOrderValue,
+        returningRate,
+        todaySales,
+        todayOrders: todayOrders.length,
+        totalCustomers: customers.length,
+        period: {
+          start: formatDateIL(start),
+          end: formatDateIL(end)
+        }
+      }
+    };
+
+    // Update cache
+    if (!startDate && !endDate) {
+      cache.analytics.data = result;
+      cache.analytics.timestamp = Date.now();
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Analytics summary error:', error.message);
+    if (cache.analytics.data) {
+      return res.json({ ...cache.analytics.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/analytics/sales-chart - Sales data for chart
+router.get('/analytics/sales-chart', async (req, res) => {
+  try {
+    const { startDate, endDate, period, groupBy } = req.query;
+
+    if (isCacheValid('salesChart') && !startDate && !endDate) {
+      console.log('Returning cached sales chart');
+      return res.json({ ...cache.salesChart.data, cached: true, cacheAge: getCacheAge('salesChart') });
+    }
+
+    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
+    const { start, end } = getDateRange(startDate, endDate, period || '30days');
+
+    // Filter orders
+    const filteredOrders = orders.filter(o => {
+      const orderDate = new Date(o.created_at);
+      return orderDate >= start && orderDate <= end;
+    });
+
+    // Group by day/week/month
+    const salesByDate = {};
+    const groupByDays = groupBy === 'week' ? 7 : groupBy === 'month' ? 30 : 1;
+
+    // Generate all dates in range
+    const dateLabels = [];
+    const currentDate = new Date(start);
+    while (currentDate <= end) {
+      const dateKey = currentDate.toISOString().split('T')[0];
+      salesByDate[dateKey] = { sales: 0, orders: 0 };
+      dateLabels.push({
+        date: dateKey,
+        label: formatDateIL(currentDate),
+        dayName: currentDate.toLocaleDateString('he-IL', { weekday: 'short' })
+      });
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // Fill in actual data
+    filteredOrders.forEach(order => {
+      const dateKey = new Date(order.created_at).toISOString().split('T')[0];
+      if (salesByDate[dateKey]) {
+        salesByDate[dateKey].sales += parseFloat(order.total_price || 0);
+        salesByDate[dateKey].orders += 1;
+      }
+    });
+
+    // Convert to array
+    const chartData = dateLabels.map(d => ({
+      date: d.date,
+      label: d.label,
+      dayName: d.dayName,
+      sales: Math.round(salesByDate[d.date].sales),
+      orders: salesByDate[d.date].orders
+    }));
+
+    const result = {
+      success: true,
+      data: chartData,
+      period: { start: formatDateIL(start), end: formatDateIL(end) }
+    };
+
+    if (!startDate && !endDate) {
+      cache.salesChart.data = result;
+      cache.salesChart.timestamp = Date.now();
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Sales chart error:', error.message);
+    if (cache.salesChart.data) {
+      return res.json({ ...cache.salesChart.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/analytics/top-products - Top products by sales
+router.get('/analytics/top-products', async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+
+    if (isCacheValid('topProducts')) {
+      console.log('Returning cached top products');
+      return res.json({ ...cache.topProducts.data, cached: true, cacheAge: getCacheAge('topProducts') });
+    }
+
+    const [products, orders] = await Promise.all([
+      shopifyService.getProducts({ limit: 250 }),
+      shopifyService.getOrders({ status: 'any', limit: 250 })
+    ]);
+
+    // Build product map for inventory lookup
+    const productMap = {};
+    products.forEach(p => {
+      productMap[p.id] = {
+        title: p.title,
+        image: p.images?.[0]?.src || null,
+        inventory: (p.variants || []).reduce((sum, v) => sum + (v.inventory_quantity || 0), 0),
+        price: p.variants?.[0]?.price || '0'
+      };
+    });
+
+    // Count sales from line items
+    const productSales = {};
+    orders.forEach(order => {
+      (order.line_items || []).forEach(item => {
+        const productId = item.product_id;
+        if (!productSales[productId]) {
+          productSales[productId] = {
+            id: productId,
+            title: item.title,
+            quantity: 0,
+            revenue: 0,
+            image: productMap[productId]?.image || null,
+            inventory: productMap[productId]?.inventory || 0
+          };
+        }
+        productSales[productId].quantity += item.quantity;
+        productSales[productId].revenue += parseFloat(item.price) * item.quantity;
+      });
+    });
+
+    // Sort and limit
+    const topProducts = Object.values(productSales)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, parseInt(limit))
+      .map(p => ({
+        ...p,
+        revenue: Math.round(p.revenue)
+      }));
+
+    const result = {
+      success: true,
+      data: topProducts,
+      total: Object.keys(productSales).length
+    };
+
+    cache.topProducts.data = result;
+    cache.topProducts.timestamp = Date.now();
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Top products error:', error.message);
+    if (cache.topProducts.data) {
+      return res.json({ ...cache.topProducts.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/analytics/top-customers - Top customers by spend
+router.get('/analytics/top-customers', async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+
+    if (isCacheValid('topCustomers')) {
+      console.log('Returning cached top customers');
+      return res.json({ ...cache.topCustomers.data, cached: true, cacheAge: getCacheAge('topCustomers') });
+    }
+
+    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
+
+    // Aggregate by customer
+    const customerStats = {};
+    orders.forEach(order => {
+      if (!order.customer?.id) return;
+
+      const customerId = order.customer.id;
+      if (!customerStats[customerId]) {
+        customerStats[customerId] = {
+          id: customerId,
+          name: `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'לקוח אנונימי',
+          email: order.customer.email || '',
+          orderCount: 0,
+          totalSpend: 0,
+          lastOrderDate: null
+        };
+      }
+
+      customerStats[customerId].orderCount += 1;
+      customerStats[customerId].totalSpend += parseFloat(order.total_price || 0);
+
+      const orderDate = new Date(order.created_at);
+      if (!customerStats[customerId].lastOrderDate || orderDate > new Date(customerStats[customerId].lastOrderDate)) {
+        customerStats[customerId].lastOrderDate = order.created_at;
+      }
+    });
+
+    // Sort by total spend
+    const topCustomers = Object.values(customerStats)
+      .sort((a, b) => b.totalSpend - a.totalSpend)
+      .slice(0, parseInt(limit))
+      .map(c => ({
+        ...c,
+        totalSpend: Math.round(c.totalSpend),
+        lastOrderDate: formatDateIL(c.lastOrderDate),
+        avgOrder: Math.round(c.totalSpend / c.orderCount)
+      }));
+
+    // Calculate LTV average
+    const totalLTV = topCustomers.reduce((sum, c) => sum + c.totalSpend, 0);
+    const avgLTV = topCustomers.length > 0 ? Math.round(totalLTV / topCustomers.length) : 0;
+
+    const result = {
+      success: true,
+      data: topCustomers,
+      stats: {
+        totalCustomers: Object.keys(customerStats).length,
+        avgLTV
+      }
+    };
+
+    cache.topCustomers.data = result;
+    cache.topCustomers.timestamp = Date.now();
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Top customers error:', error.message);
+    if (cache.topCustomers.data) {
+      return res.json({ ...cache.topCustomers.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/orders/recent - Recent orders list
+router.get('/orders/recent', async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+
+    if (isCacheValid('recentOrders')) {
+      console.log('Returning cached recent orders');
+      return res.json({ ...cache.recentOrders.data, cached: true, cacheAge: getCacheAge('recentOrders') });
+    }
+
+    const orders = await shopifyService.getOrders({ status: 'any', limit: parseInt(limit) });
+
+    const recentOrders = orders.map(order => {
+      // Extract discount codes
+      const discountCodes = (order.discount_codes || []).map(d => d.code).join(', ') || '-';
+
+      // Financial status translation
+      const statusMap = {
+        'paid': 'שולם',
+        'pending': 'ממתין',
+        'refunded': 'הוחזר',
+        'partially_refunded': 'הוחזר חלקית',
+        'voided': 'בוטל',
+        'authorized': 'מאושר'
+      };
+
+      return {
+        id: order.id,
+        orderNumber: order.order_number || order.name,
+        customerName: order.customer
+          ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim() || 'לקוח אנונימי'
+          : 'אורח',
+        email: order.customer?.email || '',
+        total: Math.round(parseFloat(order.total_price || 0)),
+        discountCode: discountCodes,
+        status: statusMap[order.financial_status] || order.financial_status,
+        statusRaw: order.financial_status,
+        fulfillment: order.fulfillment_status || 'unfulfilled',
+        date: formatDateIL(order.created_at),
+        itemCount: (order.line_items || []).reduce((sum, item) => sum + item.quantity, 0)
+      };
+    });
+
+    const result = {
+      success: true,
+      data: recentOrders,
+      total: recentOrders.length
+    };
+
+    cache.recentOrders.data = result;
+    cache.recentOrders.timestamp = Date.now();
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Recent orders error:', error.message);
+    if (cache.recentOrders.data) {
+      return res.json({ ...cache.recentOrders.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// GET /api/shopify/customers/stats - Customer statistics
+router.get('/customers/stats', async (req, res) => {
+  try {
+    const [customers, orders] = await Promise.all([
+      shopifyService.getCustomers({ limit: 250 }),
+      shopifyService.getOrders({ status: 'any', limit: 250 })
+    ]);
+
+    const now = new Date();
+    const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    // New customers this month
+    const newCustomersThisMonth = customers.filter(c => new Date(c.created_at) >= monthAgo).length;
+
+    // Calculate returning rate and LTV
+    const customerOrderCounts = {};
+    const customerSpend = {};
+
+    orders.forEach(o => {
+      if (o.customer?.id) {
+        customerOrderCounts[o.customer.id] = (customerOrderCounts[o.customer.id] || 0) + 1;
+        customerSpend[o.customer.id] = (customerSpend[o.customer.id] || 0) + parseFloat(o.total_price || 0);
+      }
+    });
+
+    const uniqueCustomers = Object.keys(customerOrderCounts).length;
+    const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
+    const returningRate = uniqueCustomers > 0 ? Math.round((returningCustomers / uniqueCustomers) * 100) : 0;
+
+    const totalSpend = Object.values(customerSpend).reduce((sum, s) => sum + s, 0);
+    const avgLTV = uniqueCustomers > 0 ? Math.round(totalSpend / uniqueCustomers) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalCustomers: customers.length,
+        newThisMonth: newCustomersThisMonth,
+        returningRate,
+        avgLTV,
+        uniqueBuyers: uniqueCustomers
+      }
+    });
+
+  } catch (error) {
+    console.error('Customer stats error:', error.message);
+    res.status(500).json({ error: true, message: error.message });
+  }
+});
+
+// ==========================================
+// LEGACY ENDPOINTS (for backward compatibility)
+// ==========================================
+
+// GET /api/shopify/analytics - Legacy endpoint
 router.get('/analytics', async (req, res) => {
   try {
     const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
@@ -76,16 +550,13 @@ router.get('/analytics', async (req, res) => {
     const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Filter orders by date
     const todayOrders = orders.filter(o => new Date(o.created_at) >= today);
     const weekOrders = orders.filter(o => new Date(o.created_at) >= weekAgo);
     const monthOrders = orders.filter(o => new Date(o.created_at) >= monthAgo);
 
-    // Calculate totals
     const calcTotal = (orderList) => orderList.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
     const calcAvg = (orderList) => orderList.length > 0 ? calcTotal(orderList) / orderList.length : 0;
 
-    // Daily sales for chart (last 7 days)
     const dailySales = [];
     for (let i = 6; i >= 0; i--) {
       const date = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
@@ -105,21 +576,9 @@ router.get('/analytics', async (req, res) => {
     res.json({
       success: true,
       data: {
-        today: {
-          orders: todayOrders.length,
-          total: calcTotal(todayOrders),
-          average: calcAvg(todayOrders)
-        },
-        week: {
-          orders: weekOrders.length,
-          total: calcTotal(weekOrders),
-          average: calcAvg(weekOrders)
-        },
-        month: {
-          orders: monthOrders.length,
-          total: calcTotal(monthOrders),
-          average: calcAvg(monthOrders)
-        },
+        today: { orders: todayOrders.length, total: calcTotal(todayOrders), average: calcAvg(todayOrders) },
+        week: { orders: weekOrders.length, total: calcTotal(weekOrders), average: calcAvg(weekOrders) },
+        month: { orders: monthOrders.length, total: calcTotal(monthOrders), average: calcAvg(monthOrders) },
         dailySales,
         currency: orders[0]?.currency || 'ILS'
       }
@@ -127,52 +586,41 @@ router.get('/analytics', async (req, res) => {
 
   } catch (error) {
     console.error('Analytics error:', error.message);
-    res.status(500).json({
-      error: true,
-      message: error.message
-    });
+    res.status(500).json({ error: true, message: error.message });
   }
 });
 
-// GET /api/shopify/discounts - Coupon codes and usage (WITH RATE LIMITING & CACHING)
+// GET /api/shopify/discounts - Coupon codes (with caching)
 router.get('/discounts', async (req, res) => {
   try {
-    // Check cache first (5 minute TTL)
-    const now = Date.now();
-    if (discountsCache.data && (now - discountsCache.timestamp) < discountsCache.TTL) {
-      console.log('=== RETURNING CACHED DISCOUNTS ===');
+    if (isCacheValid('discounts')) {
+      console.log('Returning cached discounts');
       return res.json({
         success: true,
-        data: discountsCache.data,
-        total: discountsCache.data.length,
+        data: cache.discounts.data,
+        total: cache.discounts.data.length,
         cached: true,
-        cacheAge: Math.round((now - discountsCache.timestamp) / 1000) + 's'
+        cacheAge: getCacheAge('discounts')
       });
     }
 
     const { baseUrl, headers } = shopifyService.getConfig();
-    const axios = require('axios');
     const allDiscounts = [];
 
     console.log('=== FETCHING SHOPIFY DISCOUNTS (RATE LIMITED) ===');
 
-    // 1. Fetch ALL price rules with pagination (rate limited)
+    // Fetch price rules
     let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
     let allPriceRules = [];
 
     while (priceRulesUrl) {
-      console.log('Fetching price rules:', priceRulesUrl);
-
-      // Rate limited request with timeout
       const priceRulesResponse = await rateLimitedRequest(() =>
         axios.get(priceRulesUrl, axiosConfig(headers))
       );
 
       const rules = priceRulesResponse.data.price_rules || [];
       allPriceRules = allPriceRules.concat(rules);
-      console.log(`Got ${rules.length} price rules, total: ${allPriceRules.length}`);
 
-      // Check for pagination link
       const linkHeader = priceRulesResponse.headers.link;
       priceRulesUrl = null;
       if (linkHeader) {
@@ -181,30 +629,21 @@ router.get('/discounts', async (req, res) => {
       }
     }
 
-    console.log(`Total price rules found: ${allPriceRules.length}`);
-
-    // 2. Get discount codes for each price rule (rate limited, with 1 second delay between rules)
+    // Get discount codes for each price rule
     for (let i = 0; i < allPriceRules.length; i++) {
       const rule = allPriceRules[i];
       let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
 
-      // Add 1 second delay between price rules (not just rate limit)
-      if (i > 0) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+      if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
 
       while (codesUrl) {
         try {
-          // Rate limited request with timeout
           const codesResponse = await rateLimitedRequest(() =>
             axios.get(codesUrl, axiosConfig(headers))
           );
 
           const codes = codesResponse.data.discount_codes || [];
 
-          console.log(`Price rule "${rule.title}" (ID: ${rule.id}): ${codes.length} codes`);
-
-          // Add each discount code as a separate entry
           for (const code of codes) {
             allDiscounts.push({
               id: code.id,
@@ -222,7 +661,6 @@ router.get('/discounts', async (req, res) => {
             });
           }
 
-          // Check for pagination
           const linkHeader = codesResponse.headers.link;
           codesUrl = null;
           if (linkHeader) {
@@ -230,126 +668,19 @@ router.get('/discounts', async (req, res) => {
             if (nextMatch) codesUrl = nextMatch[1];
           }
         } catch (e) {
-          // Handle 429 Too Many Requests specifically
           if (e.response?.status === 429) {
-            console.log('Rate limited by Shopify, waiting 2 seconds...');
             await new Promise(resolve => setTimeout(resolve, 2000));
-            continue; // Retry the same URL
+            continue;
           }
-          console.log(`Error fetching codes for rule ${rule.id}:`, e.message);
           codesUrl = null;
         }
       }
     }
 
-    // 3. Try to fetch automatic discounts (GraphQL API) - rate limited
-    try {
-      console.log('Fetching automatic discounts via GraphQL...');
-
-      // Wait before GraphQL call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      const graphqlUrl = baseUrl.replace('/admin/api/2024-01', '/admin/api/2024-01/graphql.json');
-
-      const graphqlQuery = {
-        query: `{
-          discountNodes(first: 100) {
-            edges {
-              node {
-                id
-                discount {
-                  ... on DiscountCodeBasic {
-                    title
-                    codes(first: 10) {
-                      edges {
-                        node {
-                          code
-                          usageCount: asyncUsageCount
-                        }
-                      }
-                    }
-                  }
-                  ... on DiscountCodeBxgy {
-                    title
-                    codes(first: 10) {
-                      edges {
-                        node {
-                          code
-                          usageCount: asyncUsageCount
-                        }
-                      }
-                    }
-                  }
-                  ... on DiscountCodeFreeShipping {
-                    title
-                    codes(first: 10) {
-                      edges {
-                        node {
-                          code
-                          usageCount: asyncUsageCount
-                        }
-                      }
-                    }
-                  }
-                  ... on DiscountAutomaticBasic {
-                    title
-                  }
-                  ... on DiscountAutomaticBxgy {
-                    title
-                  }
-                }
-              }
-            }
-          }
-        }`
-      };
-
-      const graphqlResponse = await rateLimitedRequest(() =>
-        axios.post(graphqlUrl, graphqlQuery, axiosConfig(headers))
-      );
-
-      if (graphqlResponse.data?.data?.discountNodes?.edges) {
-        const nodes = graphqlResponse.data.data.discountNodes.edges;
-        console.log(`GraphQL returned ${nodes.length} discount nodes`);
-
-        for (const edge of nodes) {
-          const node = edge.node;
-          const discount = node.discount;
-
-          if (discount?.codes?.edges) {
-            for (const codeEdge of discount.codes.edges) {
-              const codeData = codeEdge.node;
-              const existingCode = allDiscounts.find(d => d.code === codeData.code);
-
-              if (existingCode) {
-                if (codeData.usageCount && codeData.usageCount > existingCode.usageCount) {
-                  existingCode.usageCount = codeData.usageCount;
-                }
-              } else {
-                allDiscounts.push({
-                  id: node.id,
-                  code: codeData.code,
-                  title: codeData.code,
-                  usageCount: codeData.usageCount || 0,
-                  source: 'graphql'
-                });
-              }
-            }
-          }
-        }
-      }
-    } catch (graphqlError) {
-      console.log('GraphQL fetch failed (optional):', graphqlError.message);
-    }
-
-    // Sort by usage count (highest first)
     allDiscounts.sort((a, b) => b.usageCount - a.usageCount);
 
-    // Update cache
-    discountsCache.data = allDiscounts;
-    discountsCache.timestamp = Date.now();
-
-    console.log(`=== TOTAL DISCOUNTS: ${allDiscounts.length} (CACHED FOR 5 MIN) ===`);
+    cache.discounts.data = allDiscounts;
+    cache.discounts.timestamp = Date.now();
 
     res.json({
       success: true,
@@ -360,96 +691,74 @@ router.get('/discounts', async (req, res) => {
 
   } catch (error) {
     console.error('Discounts error:', error.message);
-
-    // If we have cached data, return it even if stale
-    if (discountsCache.data) {
-      console.log('Returning stale cache due to error');
+    if (cache.discounts.data) {
       return res.json({
         success: true,
-        data: discountsCache.data,
-        total: discountsCache.data.length,
+        data: cache.discounts.data,
+        total: cache.discounts.data.length,
         cached: true,
         stale: true
       });
     }
-
-    res.status(500).json({
-      error: true,
-      message: error.message
-    });
+    res.status(500).json({ error: true, message: error.message });
   }
 });
 
-// GET /api/shopify/top-products - Best sellers and low stock
+// GET /api/shopify/top-products - Legacy endpoint
 router.get('/top-products', async (req, res) => {
   try {
-    // Get all products
-    const products = await shopifyService.getProducts({ limit: 250 });
+    const [products, orders] = await Promise.all([
+      shopifyService.getProducts({ limit: 250 }),
+      shopifyService.getOrders({ status: 'any', limit: 250 })
+    ]);
 
-    // Get recent orders to calculate sales
-    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
-
-    // Count product sales from line items
     const productSales = {};
     orders.forEach(order => {
       (order.line_items || []).forEach(item => {
         const productId = item.product_id;
         if (!productSales[productId]) {
-          productSales[productId] = {
-            id: productId,
-            title: item.title,
-            quantity: 0,
-            revenue: 0
-          };
+          productSales[productId] = { id: productId, title: item.title, quantity: 0, revenue: 0 };
         }
         productSales[productId].quantity += item.quantity;
         productSales[productId].revenue += parseFloat(item.price) * item.quantity;
       });
     });
 
-    // Convert to array and sort
     const salesArray = Object.values(productSales);
     const bestByQuantity = [...salesArray].sort((a, b) => b.quantity - a.quantity).slice(0, 10);
     const bestByRevenue = [...salesArray].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
 
-    // Find low stock products
     const lowStock = products
-      .map(p => {
-        const totalInventory = (p.variants || []).reduce((sum, v) => sum + (v.inventory_quantity || 0), 0);
-        return {
-          id: p.id,
-          title: p.title,
-          image: p.images?.[0]?.src || null,
-          inventory: totalInventory,
-          price: p.variants?.[0]?.price || '0'
-        };
-      })
+      .map(p => ({
+        id: p.id,
+        title: p.title,
+        image: p.images?.[0]?.src || null,
+        inventory: (p.variants || []).reduce((sum, v) => sum + (v.inventory_quantity || 0), 0),
+        price: p.variants?.[0]?.price || '0'
+      }))
       .filter(p => p.inventory <= 5 && p.inventory >= 0)
       .sort((a, b) => a.inventory - b.inventory)
       .slice(0, 10);
 
     res.json({
       success: true,
-      data: {
-        bestByQuantity,
-        bestByRevenue,
-        lowStock,
-        totalProducts: products.length
-      }
+      data: { bestByQuantity, bestByRevenue, lowStock, totalProducts: products.length }
     });
 
   } catch (error) {
     console.error('Top products error:', error.message);
-    res.status(500).json({
-      error: true,
-      message: error.message
-    });
+    res.status(500).json({ error: true, message: error.message });
   }
 });
 
-// GET /api/shopify/products - Get all products for dropdown
+// GET /api/shopify/products - Products list
 router.get('/products', async (req, res) => {
   try {
+    if (isCacheValid('products')) {
+      console.log('Returning cached products');
+      return res.json({ ...cache.products.data, cached: true, cacheAge: getCacheAge('products') });
+    }
+
     const products = await shopifyService.getProducts({ limit: 250 });
 
     const simplifiedProducts = products.map(p => ({
@@ -461,17 +770,19 @@ router.get('/products', async (req, res) => {
       inventory: (p.variants || []).reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
     }));
 
-    res.json({
-      success: true,
-      data: simplifiedProducts
-    });
+    const result = { success: true, data: simplifiedProducts };
+
+    cache.products.data = result;
+    cache.products.timestamp = Date.now();
+
+    res.json(result);
 
   } catch (error) {
     console.error('Products error:', error.message);
-    res.status(500).json({
-      error: true,
-      message: error.message
-    });
+    if (cache.products.data) {
+      return res.json({ ...cache.products.data, cached: true, stale: true });
+    }
+    res.status(500).json({ error: true, message: error.message });
   }
 });
 

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>אסיף קוסמטיקס - מרכז בקרה</title>
   <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg: #0d0d0f;
@@ -598,6 +599,194 @@
       border-bottom: 1px solid var(--border);
     }
 
+    /* Metorik-style KPI Cards */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 1200px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 600px) {
+      .kpi-grid { grid-template-columns: 1fr; }
+    }
+
+    .kpi-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-right: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 20px;
+      transition: all 0.2s;
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(212, 168, 83, 0.15);
+    }
+
+    .kpi-card-title {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .kpi-card-value {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+
+    .kpi-card-sub {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .kpi-card-change {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 12px;
+      margin-top: 8px;
+    }
+
+    .kpi-card-change.up { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+    .kpi-card-change.down { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+
+    /* Time Period Selector */
+    .period-selector {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .period-btn {
+      padding: 8px 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+
+    .period-btn:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .period-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+      font-weight: 600;
+    }
+
+    .date-input {
+      padding: 8px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+
+    /* Chart Container */
+    .chart-container {
+      position: relative;
+      height: 300px;
+      width: 100%;
+    }
+
+    /* Order Status Badges */
+    .order-status {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .order-status.paid { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+    .order-status.pending { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+    .order-status.refunded { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+
+    /* Customer Stats Cards */
+    .customer-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .customer-stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .customer-stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .customer-stat-value {
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .customer-stat-value.highlight { color: var(--accent); }
+
+    .customer-stat-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    /* Table Improvements */
+    .data-table-wrapper {
+      overflow-x: auto;
+    }
+
+    .data-table .product-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .data-table .product-image-small {
+      width: 40px;
+      height: 40px;
+      border-radius: 6px;
+      object-fit: cover;
+      background: var(--bg);
+    }
+
+    .data-table .discount-code {
+      font-family: monospace;
+      background: rgba(212, 168, 83, 0.1);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+
     .settings-row {
       display: flex;
       align-items: center;
@@ -654,6 +843,10 @@
         <a class="nav-item" data-page="shopify-analytics">
           <span class="nav-item-icon">📊</span>
           <span class="nav-item-text">דוחות מכירות</span>
+        </a>
+        <a class="nav-item" data-page="shopify-customers">
+          <span class="nav-item-icon">👥</span>
+          <span class="nav-item-text">לקוחות</span>
         </a>
         <a class="nav-item" data-page="shopify-products">
           <span class="nav-item-icon">🛍️</span>
@@ -905,41 +1098,154 @@
         </div>
       </div>
 
-      <!-- ==================== SHOPIFY ANALYTICS PAGE ==================== -->
+      <!-- ==================== SHOPIFY ANALYTICS PAGE (METORIK STYLE) ==================== -->
       <div class="page" id="page-shopify-analytics">
-        <div class="analytics-grid" id="analyticsCards">
-          <div class="analytics-card">
-            <div class="analytics-card-title">מכירות היום</div>
-            <div class="analytics-card-value accent" id="analyticsTodaySales">--</div>
-            <div class="analytics-card-sub" id="analyticsTodayOrders">-- הזמנות</div>
+        <!-- KPI Cards Row -->
+        <div class="kpi-grid" id="analyticsKPIs">
+          <div class="kpi-card">
+            <div class="kpi-card-title">💰 מכירות היום</div>
+            <div class="kpi-card-value" id="kpiTodaySales">--</div>
+            <div class="kpi-card-sub" id="kpiTodayOrders">-- הזמנות</div>
           </div>
-          <div class="analytics-card">
-            <div class="analytics-card-title">מכירות השבוע</div>
-            <div class="analytics-card-value accent" id="analyticsWeekSales">--</div>
-            <div class="analytics-card-sub" id="analyticsWeekOrders">-- הזמנות</div>
+          <div class="kpi-card">
+            <div class="kpi-card-title">📦 הזמנות היום</div>
+            <div class="kpi-card-value" id="kpiTodayOrderCount">--</div>
+            <div class="kpi-card-sub">הזמנות חדשות</div>
           </div>
-          <div class="analytics-card">
-            <div class="analytics-card-title">מכירות החודש</div>
-            <div class="analytics-card-value accent" id="analyticsMonthSales">--</div>
-            <div class="analytics-card-sub" id="analyticsMonthOrders">-- הזמנות</div>
+          <div class="kpi-card">
+            <div class="kpi-card-title">📊 ממוצע להזמנה</div>
+            <div class="kpi-card-value" id="kpiAvgOrder">--</div>
+            <div class="kpi-card-sub">ב-30 יום אחרונים</div>
           </div>
-          <div class="analytics-card">
-            <div class="analytics-card-title">ממוצע להזמנה</div>
-            <div class="analytics-card-value" id="analyticsAvgOrder">--</div>
-            <div class="analytics-card-sub">החודש</div>
+          <div class="kpi-card">
+            <div class="kpi-card-title">🔄 לקוחות חוזרים</div>
+            <div class="kpi-card-value" id="kpiReturningRate">--%</div>
+            <div class="kpi-card-sub">מתוך כלל הלקוחות</div>
           </div>
         </div>
 
+        <!-- Time Period Selector -->
+        <div class="period-selector">
+          <button class="period-btn" data-period="today">היום</button>
+          <button class="period-btn" data-period="week">השבוע</button>
+          <button class="period-btn active" data-period="month">החודש</button>
+          <button class="period-btn" data-period="30days">30 יום</button>
+          <span style="color: var(--text-muted); margin: 0 8px;">|</span>
+          <input type="date" class="date-input" id="startDate">
+          <span style="color: var(--text-muted);">עד</span>
+          <input type="date" class="date-input" id="endDate">
+          <button class="period-btn" id="customDateBtn">הצג</button>
+        </div>
+
+        <!-- Sales Chart -->
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">📈 מכירות יומיות (7 ימים אחרונים)</span>
+            <span class="panel-title">📈 גרף מכירות</span>
+            <span id="chartPeriodLabel" style="font-size: 0.8rem; color: var(--text-muted);"></span>
           </div>
           <div class="panel-content">
-            <div id="salesChart" style="display: flex; align-items: flex-end; gap: 8px; height: 200px; padding: 20px 0;">
-              <div class="loading">
-                <div class="spinner"></div>
-                <p>טוען נתונים...</p>
+            <div class="chart-container">
+              <canvas id="salesChartCanvas"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="two-columns">
+          <!-- Top Products Table -->
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🏆 מוצרים מובילים</span>
+            </div>
+            <div class="panel-content">
+              <div class="data-table-wrapper">
+                <table class="data-table" id="topProductsTable">
+                  <thead>
+                    <tr>
+                      <th>מוצר</th>
+                      <th>נמכר</th>
+                      <th>הכנסה</th>
+                      <th>מלאי</th>
+                    </tr>
+                  </thead>
+                  <tbody id="topProductsBody">
+                    <tr><td colspan="4" class="loading"><div class="spinner"></div></td></tr>
+                  </tbody>
+                </table>
               </div>
+            </div>
+          </div>
+
+          <!-- Recent Orders Table -->
+          <div class="panel">
+            <div class="panel-header">
+              <span class="panel-title">🧾 הזמנות אחרונות</span>
+            </div>
+            <div class="panel-content">
+              <div class="data-table-wrapper">
+                <table class="data-table" id="recentOrdersTable">
+                  <thead>
+                    <tr>
+                      <th>מס' הזמנה</th>
+                      <th>לקוח</th>
+                      <th>סכום</th>
+                      <th>קופון</th>
+                      <th>סטטוס</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recentOrdersBody">
+                    <tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== CUSTOMERS PAGE ==================== -->
+      <div class="page" id="page-shopify-customers">
+        <!-- Customer Stats Cards -->
+        <div class="customer-stats-grid" id="customerStats">
+          <div class="customer-stat-card">
+            <div class="customer-stat-value" id="statTotalCustomers">--</div>
+            <div class="customer-stat-label">סה"כ לקוחות</div>
+          </div>
+          <div class="customer-stat-card">
+            <div class="customer-stat-value highlight" id="statNewCustomers">--</div>
+            <div class="customer-stat-label">לקוחות חדשים החודש</div>
+          </div>
+          <div class="customer-stat-card">
+            <div class="customer-stat-value" id="statReturningRate">--%</div>
+            <div class="customer-stat-label">אחוז לקוחות חוזרים</div>
+          </div>
+          <div class="customer-stat-card">
+            <div class="customer-stat-value highlight" id="statAvgLTV">--</div>
+            <div class="customer-stat-label">ממוצע LTV</div>
+          </div>
+        </div>
+
+        <!-- Top Customers Table -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">👑 לקוחות מובילים</span>
+            <span style="font-size: 0.8rem; color: var(--text-muted);">לפי סה"כ קניות</span>
+          </div>
+          <div class="panel-content">
+            <div class="data-table-wrapper">
+              <table class="data-table" id="topCustomersTable">
+                <thead>
+                  <tr>
+                    <th>לקוח</th>
+                    <th>אימייל</th>
+                    <th>הזמנות</th>
+                    <th>סה"כ קניות</th>
+                    <th>הזמנה אחרונה</th>
+                  </tr>
+                </thead>
+                <tbody id="topCustomersBody">
+                  <tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

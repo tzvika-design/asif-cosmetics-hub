@@ -20,7 +20,8 @@ document.addEventListener('DOMContentLoaded', function() {
     'dashboard': 'דשבורד ראשי',
     'publish': 'פרסום ברשתות',
     'creative-agent': 'סוכן קריאטיב',
-    'shopify-analytics': 'דוחות מכירות',
+    'shopify-analytics': '📊 דוחות מכירות',
+    'shopify-customers': '👥 לקוחות',
     'shopify-products': 'מוצרים מובילים',
     'shopify-coupons': 'קופונים',
     'settings': 'הגדרות'
@@ -41,7 +42,8 @@ document.addEventListener('DOMContentLoaded', function() {
       pageTitle.textContent = pageTitles[page] || 'דשבורד';
 
       // Load page-specific data
-      if (page === 'shopify-analytics') loadAnalytics();
+      if (page === 'shopify-analytics') loadMetorikAnalytics();
+      if (page === 'shopify-customers') loadCustomersPage();
       if (page === 'shopify-products') loadTopProducts();
       if (page === 'shopify-coupons') loadCoupons();
       if (page === 'creative-agent') loadProducts();
@@ -622,6 +624,274 @@ document.addEventListener('DOMContentLoaded', function() {
         </div>
       `;
     }).join('');
+  }
+
+  // ==========================================
+  // METORIK-STYLE ANALYTICS (NEW)
+  // ==========================================
+
+  let salesChart = null;
+  let currentPeriod = 'month';
+
+  async function loadMetorikAnalytics(period = currentPeriod) {
+    currentPeriod = period;
+
+    // Load all data in parallel
+    await Promise.all([
+      loadKPICards(period),
+      loadSalesChart(period),
+      loadTopProductsTable(),
+      loadRecentOrders()
+    ]);
+
+    // Setup period selector
+    setupPeriodSelector();
+  }
+
+  async function loadKPICards(period) {
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/summary?period=' + period);
+      const data = await response.json();
+
+      if (data.success) {
+        const d = data.data;
+        const el = (id) => document.getElementById(id);
+
+        if (el('kpiTodaySales')) el('kpiTodaySales').textContent = '₪' + Math.round(d.todaySales).toLocaleString();
+        if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = d.todayOrders + ' הזמנות';
+        if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').textContent = d.todayOrders;
+        if (el('kpiAvgOrder')) el('kpiAvgOrder').textContent = '₪' + Math.round(d.avgOrderValue).toLocaleString();
+        if (el('kpiReturningRate')) el('kpiReturningRate').textContent = d.returningRate + '%';
+      }
+    } catch (e) {
+      console.error('KPI cards error:', e);
+    }
+  }
+
+  async function loadSalesChart(period) {
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/sales-chart?period=' + period);
+      const data = await response.json();
+
+      if (data.success) {
+        renderChartJS(data.data);
+
+        // Update period label
+        const label = document.getElementById('chartPeriodLabel');
+        if (label && data.period) {
+          label.textContent = data.period.start + ' - ' + data.period.end;
+        }
+      }
+    } catch (e) {
+      console.error('Sales chart error:', e);
+    }
+  }
+
+  function renderChartJS(chartData) {
+    const ctx = document.getElementById('salesChartCanvas');
+    if (!ctx) return;
+
+    // Destroy existing chart
+    if (salesChart) {
+      salesChart.destroy();
+    }
+
+    // Prepare data - show last 14 days max for readability
+    const displayData = chartData.slice(-14);
+
+    salesChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: displayData.map(d => d.dayName + ' ' + d.label.split('/').slice(0, 2).join('/')),
+        datasets: [{
+          label: 'מכירות',
+          data: displayData.map(d => d.sales),
+          borderColor: '#d4a853',
+          backgroundColor: 'rgba(212, 168, 83, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.3,
+          pointBackgroundColor: '#d4a853',
+          pointBorderColor: '#d4a853',
+          pointRadius: 4,
+          pointHoverRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            rtl: true,
+            textDirection: 'rtl',
+            callbacks: {
+              label: function(context) {
+                return '₪' + context.parsed.y.toLocaleString();
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            ticks: { color: '#888', font: { size: 10 } }
+          },
+          y: {
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            ticks: {
+              color: '#888',
+              callback: function(value) {
+                return '₪' + value.toLocaleString();
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  async function loadTopProductsTable() {
+    const tbody = document.getElementById('topProductsBody');
+    if (!tbody) return;
+
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/top-products?limit=8');
+      const data = await response.json();
+
+      if (data.success && data.data.length > 0) {
+        tbody.innerHTML = data.data.map(p => `
+          <tr>
+            <td class="product-cell">
+              ${p.image ? `<img src="${p.image}" class="product-image-small" alt="">` : ''}
+              <span>${p.title.substring(0, 30)}${p.title.length > 30 ? '...' : ''}</span>
+            </td>
+            <td>${p.quantity}</td>
+            <td><strong>₪${p.revenue.toLocaleString()}</strong></td>
+            <td style="color: ${p.inventory <= 5 ? 'var(--error)' : 'var(--text-muted)'}">${p.inventory}</td>
+          </tr>
+        `).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">אין נתונים</td></tr>';
+      }
+    } catch (e) {
+      console.error('Top products table error:', e);
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--error);">שגיאה בטעינה</td></tr>';
+    }
+  }
+
+  async function loadRecentOrders() {
+    const tbody = document.getElementById('recentOrdersBody');
+    if (!tbody) return;
+
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/orders/recent?limit=10');
+      const data = await response.json();
+
+      if (data.success && data.data.length > 0) {
+        tbody.innerHTML = data.data.map(o => `
+          <tr>
+            <td><strong>#${o.orderNumber}</strong></td>
+            <td>${o.customerName}</td>
+            <td>₪${o.total.toLocaleString()}</td>
+            <td>${o.discountCode !== '-' ? `<span class="discount-code">${o.discountCode}</span>` : '-'}</td>
+            <td><span class="order-status ${o.statusRaw}">${o.status}</span></td>
+          </tr>
+        `).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין הזמנות</td></tr>';
+      }
+    } catch (e) {
+      console.error('Recent orders error:', e);
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--error);">שגיאה בטעינה</td></tr>';
+    }
+  }
+
+  function setupPeriodSelector() {
+    // Period buttons
+    document.querySelectorAll('.period-btn[data-period]').forEach(btn => {
+      btn.onclick = function() {
+        document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        const period = this.dataset.period;
+        loadKPICards(period);
+        loadSalesChart(period);
+      };
+    });
+
+    // Custom date button
+    const customBtn = document.getElementById('customDateBtn');
+    if (customBtn) {
+      customBtn.onclick = function() {
+        const startDate = document.getElementById('startDate').value;
+        const endDate = document.getElementById('endDate').value;
+        if (startDate && endDate) {
+          document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          loadSalesChart('custom&startDate=' + startDate + '&endDate=' + endDate);
+        }
+      };
+    }
+  }
+
+  // ==========================================
+  // CUSTOMERS PAGE
+  // ==========================================
+
+  async function loadCustomersPage() {
+    await Promise.all([
+      loadCustomerStats(),
+      loadTopCustomers()
+    ]);
+  }
+
+  async function loadCustomerStats() {
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/customers/stats');
+      const data = await response.json();
+
+      if (data.success) {
+        const d = data.data;
+        const el = (id) => document.getElementById(id);
+
+        if (el('statTotalCustomers')) el('statTotalCustomers').textContent = d.totalCustomers;
+        if (el('statNewCustomers')) el('statNewCustomers').textContent = d.newThisMonth;
+        if (el('statReturningRate')) el('statReturningRate').textContent = d.returningRate + '%';
+        if (el('statAvgLTV')) el('statAvgLTV').textContent = '₪' + d.avgLTV.toLocaleString();
+      }
+    } catch (e) {
+      console.error('Customer stats error:', e);
+    }
+  }
+
+  async function loadTopCustomers() {
+    const tbody = document.getElementById('topCustomersBody');
+    if (!tbody) return;
+
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/top-customers?limit=15');
+      const data = await response.json();
+
+      if (data.success && data.data.length > 0) {
+        tbody.innerHTML = data.data.map((c, i) => `
+          <tr>
+            <td>
+              <span style="color: ${i < 3 ? 'var(--accent)' : 'var(--text)'}; font-weight: ${i < 3 ? '600' : '400'}">
+                ${i < 3 ? '👑 ' : ''}${c.name}
+              </span>
+            </td>
+            <td style="font-size: 0.8rem; color: var(--text-muted)">${c.email || '-'}</td>
+            <td>${c.orderCount}</td>
+            <td><strong style="color: var(--accent)">₪${c.totalSpend.toLocaleString()}</strong></td>
+            <td style="font-size: 0.85rem">${c.lastOrderDate}</td>
+          </tr>
+        `).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין נתונים</td></tr>';
+      }
+    } catch (e) {
+      console.error('Top customers error:', e);
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--error);">שגיאה בטעינה</td></tr>';
+    }
   }
 
   // ==========================================
