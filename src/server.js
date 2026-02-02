@@ -62,7 +62,93 @@ app.get('/health', async (req, res) => {
   });
 });
 
+// ==========================================
+// OAUTH ROUTES - Direct routes for getting new access token
+// ==========================================
+const axios = require('axios');
+
+app.get('/api/shopify/auth/start', (req, res) => {
+  const shop = 'asif-cosmetics.myshopify.com';
+  const clientId = '4669eaf94832ba48190302d0fef50aba';
+  const scopes = 'read_all_orders,read_orders,read_customers,read_products,read_inventory,read_discounts,read_price_rules,read_analytics';
+  const redirectUri = 'https://asif-cosmetics-hub-production.up.railway.app/api/shopify/callback';
+  const state = 'asif_' + Date.now();
+
+  const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+
+  console.log('[OAuth] Redirecting to:', authUrl);
+  res.redirect(authUrl);
+});
+
+app.get('/api/shopify/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  console.log('[OAuth] Callback received:', { code: !!code, state, error });
+
+  if (error) {
+    return res.send(`<html><body style="font-family:Arial;padding:50px;"><h1>Error</h1><p>${error}</p></body></html>`);
+  }
+
+  if (!code) {
+    return res.send(`<html><body style="font-family:Arial;padding:50px;"><h1>Error</h1><p>No code received</p></body></html>`);
+  }
+
+  try {
+    const response = await axios.post('https://asif-cosmetics.myshopify.com/admin/oauth/access_token', {
+      client_id: '4669eaf94832ba48190302d0fef50aba',
+      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+      code: code
+    });
+
+    const accessToken = response.data.access_token;
+    const scope = response.data.scope;
+
+    console.log('[OAuth] SUCCESS! Got access token. Scopes:', scope);
+
+    res.send(`
+      <html>
+        <head>
+          <title>OAuth Success</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 50px; background: #1a1a2e; color: #fff; text-align: center; }
+            .success { color: #4CAF50; }
+            textarea { width: 100%; height: 100px; font-size: 14px; padding: 10px; margin: 20px 0; }
+            .scopes { background: #2d2d44; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: left; }
+            button { background: #d4a853; color: #000; border: none; padding: 15px 30px; font-size: 16px; cursor: pointer; border-radius: 5px; }
+          </style>
+        </head>
+        <body>
+          <h1 class="success">Success! 🎉</h1>
+          <p>Your new access token:</p>
+          <textarea id="token" readonly>${accessToken}</textarea>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('token').value); alert('Copied!');">Copy Token</button>
+          <div class="scopes">
+            <strong>Granted Scopes:</strong><br>
+            ${scope}
+          </div>
+          <p>Copy this token and add it to Railway as <strong>SHOPIFY_ACCESS_TOKEN</strong></p>
+        </body>
+      </html>
+    `);
+
+  } catch (err) {
+    console.error('[OAuth] Error:', err.response?.data || err.message);
+    res.send(`
+      <html>
+        <body style="font-family:Arial;padding:50px;background:#1a1a2e;color:#fff;">
+          <h1 style="color:#ff4444;">Error</h1>
+          <p>${err.response?.data?.error_description || err.response?.data?.error || err.message}</p>
+          <p>Make sure SHOPIFY_CLIENT_SECRET is set in Railway environment variables.</p>
+          <a href="/api/shopify/auth/start" style="color:#d4a853;">Try Again</a>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// ==========================================
 // API Routes
+// ==========================================
 app.use('/api', apiRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/shopify', shopifyAuthRoutes);
