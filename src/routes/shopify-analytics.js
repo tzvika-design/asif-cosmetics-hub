@@ -1880,14 +1880,14 @@ router.get('/stats/lastYear', async (req, res) => {
 
 const SHOPIFY_CLIENT_ID = '4669eaf94832ba48190302d0fef50aba';
 const SHOPIFY_SHOP = 'asif-cosmetics.myshopify.com';
-const REDIRECT_URI = 'https://asif-cosmetics-hub-production.up.railway.app/api/shopify/callback';
+const REDIRECT_URI = 'https://asif-cosmetics-hub-production.up.railway.app/api/shopify/oauth/callback';
 const SCOPES = 'read_all_orders,read_orders,read_customers,read_products,read_inventory,read_discounts,read_price_rules,read_analytics';
 
 /**
- * GET /api/shopify/auth/start
+ * GET /api/shopify/oauth/start
  * Start OAuth flow - redirects to Shopify authorization page
  */
-router.get('/auth/start', (req, res) => {
+router.get('/oauth/start', (req, res) => {
   const state = 'asif_' + Date.now(); // Simple state for CSRF protection
 
   const authUrl = `https://${SHOPIFY_SHOP}/admin/oauth/authorize?` +
@@ -1902,10 +1902,10 @@ router.get('/auth/start', (req, res) => {
 });
 
 /**
- * GET /api/shopify/callback
+ * GET /api/shopify/oauth/callback
  * OAuth callback - exchanges code for access token
  */
-router.get('/callback', async (req, res) => {
+router.get('/oauth/callback', async (req, res) => {
   const axios = require('axios');
   const { code, state, error, error_description } = req.query;
 
@@ -1930,7 +1930,7 @@ router.get('/callback', async (req, res) => {
           <p><strong>Error:</strong> ${error}</p>
           <p><strong>Description:</strong> ${error_description || 'No description'}</p>
         </div>
-        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+        <p><a href="/api/shopify/oauth/start" style="color: #d4a853;">Try Again</a></p>
       </body>
       </html>
     `);
@@ -1950,7 +1950,7 @@ router.get('/callback', async (req, res) => {
       <body>
         <h1>Missing Authorization Code</h1>
         <p>No code received from Shopify.</p>
-        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+        <p><a href="/api/shopify/oauth/start" style="color: #d4a853;">Try Again</a></p>
       </body>
       </html>
     `);
@@ -2106,7 +2106,7 @@ router.get('/callback', async (req, res) => {
           <li>Is <code>SHOPIFY_CLIENT_SECRET</code> set correctly in Railway?</li>
           <li>Is the redirect URI exactly: <code>${REDIRECT_URI}</code>?</li>
         </ul>
-        <p><a href="/api/shopify/auth/start" style="color: #d4a853;">Try Again</a></p>
+        <p><a href="/api/shopify/oauth/start" style="color: #d4a853;">Try Again</a></p>
       </body>
       </html>
     `);
@@ -2114,10 +2114,10 @@ router.get('/callback', async (req, res) => {
 });
 
 /**
- * GET /api/shopify/auth/status
+ * GET /api/shopify/oauth/status
  * Check current OAuth status
  */
-router.get('/auth/status', async (req, res) => {
+router.get('/oauth/status', async (req, res) => {
   const axios = require('axios');
 
   const result = {
