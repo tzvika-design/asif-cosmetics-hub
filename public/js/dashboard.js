@@ -43,8 +43,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const chatSend = document.getElementById('chatSend');
   const chatMessages = document.getElementById('chatMessages');
 
-  console.log('Chat elements:', { chatInput, chatSend, chatMessages });
-
   function addMessage(text, type) {
     const msg = document.createElement('div');
     msg.className = 'chat-message ' + type;
@@ -54,23 +52,15 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   async function sendMessage() {
-    console.log('sendMessage called');
     const message = chatInput.value.trim();
-    console.log('Message:', message);
+    if (!message) return;
 
-    if (!message) {
-      console.log('Empty message, returning');
-      return;
-    }
-
-    // Add user message
     addMessage(message, 'user');
     chatInput.value = '';
     chatSend.disabled = true;
     chatSend.textContent = '...';
 
     try {
-      console.log('Sending to API:', API_BASE + '/api/chat');
       const response = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,9 +70,7 @@ document.addEventListener('DOMContentLoaded', function() {
         })
       });
 
-      console.log('Response status:', response.status);
       const data = await response.json();
-      console.log('Response data:', data);
 
       if (data.success) {
         addMessage(data.response, 'assistant');
@@ -90,7 +78,6 @@ document.addEventListener('DOMContentLoaded', function() {
         addMessage('שגיאה: ' + (data.message || 'Unknown error'), 'system');
       }
     } catch (error) {
-      console.error('Fetch error:', error);
       addMessage('שגיאת חיבור: ' + error.message, 'system');
     }
 
@@ -100,7 +87,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Button click handler
   chatSend.onclick = function(e) {
-    console.log('Button clicked');
     e.preventDefault();
     sendMessage();
   };
@@ -108,17 +94,21 @@ document.addEventListener('DOMContentLoaded', function() {
   // Enter key handler
   chatInput.onkeydown = function(e) {
     if (e.key === 'Enter') {
-      console.log('Enter pressed');
       e.preventDefault();
       sendMessage();
     }
   };
+
+  // ==========================================
+  // STATUS CHECKING
+  // ==========================================
 
   // Check Claude API Status
   async function checkClaudeStatus() {
     const statusCard = document.getElementById('statusClaude');
     if (!statusCard) return;
     const badge = statusCard.querySelector('.status-badge');
+    const desc = statusCard.querySelector('.status-card-content p');
 
     try {
       const response = await fetch(API_BASE + '/api/chat');
@@ -127,9 +117,11 @@ document.addEventListener('DOMContentLoaded', function() {
       if (data.status === 'ready') {
         badge.textContent = 'מחובר';
         badge.className = 'status-badge connected';
+        desc.textContent = 'בינה מלאכותית פעילה';
       } else {
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
+        desc.textContent = 'בינה מלאכותית';
       }
     } catch (error) {
       badge.textContent = 'שגיאה';
@@ -142,6 +134,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const statusCard = document.getElementById('statusShopify');
     if (!statusCard) return;
     const badge = statusCard.querySelector('.status-badge');
+    const desc = statusCard.querySelector('.status-card-content p');
 
     try {
       const response = await fetch(API_BASE + '/api/shopify/test');
@@ -150,14 +143,13 @@ document.addEventListener('DOMContentLoaded', function() {
       if (data.success) {
         badge.textContent = 'מחובר';
         badge.className = 'status-badge connected';
-        // Update shop name if available
-        const shopName = statusCard.querySelector('.status-card-content p');
-        if (shopName && data.shop && data.shop.name) {
-          shopName.textContent = data.shop.name;
+        if (data.shop && data.shop.name) {
+          desc.textContent = data.shop.name;
         }
       } else {
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
+        desc.textContent = 'חנות אונליין';
       }
     } catch (error) {
       badge.textContent = 'שגיאה';
@@ -170,6 +162,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const statusCard = document.getElementById('statusMeta');
     if (!statusCard) return;
     const badge = statusCard.querySelector('.status-badge');
+    const desc = statusCard.querySelector('.status-card-content p');
 
     try {
       const response = await fetch(API_BASE + '/api/meta/status');
@@ -178,17 +171,17 @@ document.addEventListener('DOMContentLoaded', function() {
       if (data.connected) {
         badge.textContent = 'מחובר';
         badge.className = 'status-badge connected';
-        // Update page name if available
-        const pageName = statusCard.querySelector('.status-card-content p');
-        if (pageName && data.page && data.page.name) {
-          pageName.textContent = data.page.name;
+        if (data.page && data.page.name) {
+          desc.textContent = data.page.name;
         }
       } else if (data.configured) {
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
+        desc.textContent = 'פייסבוק ואינסטגרם';
       } else {
         badge.textContent = 'לא מוגדר';
         badge.className = 'status-badge pending';
+        desc.textContent = 'פייסבוק ואינסטגרם';
       }
     } catch (error) {
       badge.textContent = 'שגיאה';
@@ -205,15 +198,214 @@ document.addEventListener('DOMContentLoaded', function() {
     ]);
   }
 
-  // Settings
-  const saveSettings = document.getElementById('saveSettings');
-  if (saveSettings) {
-    saveSettings.onclick = function() {
-      alert('ההגדרות נשמרו!\n\nשים לב: הגדרות אלו צריכות להיקבע גם בסביבת השרת (Railway).');
+  // ==========================================
+  // QUICK STATS
+  // ==========================================
+
+  async function loadQuickStats() {
+    // Load today's orders from Shopify
+    const ordersToday = document.getElementById('statOrdersToday');
+    const postsMonth = document.getElementById('statPostsMonth');
+
+    if (ordersToday) {
+      try {
+        const response = await fetch(API_BASE + '/api/orders');
+        const data = await response.json();
+
+        if (data.success && data.data) {
+          // Count today's orders
+          const today = new Date().toISOString().split('T')[0];
+          const todayOrders = data.data.filter(function(order) {
+            return order.created_at && order.created_at.startsWith(today);
+          });
+          ordersToday.textContent = todayOrders.length;
+        } else {
+          ordersToday.textContent = '0';
+        }
+      } catch (error) {
+        ordersToday.textContent = '--';
+      }
+    }
+
+    // Posts this month (placeholder for now)
+    if (postsMonth) {
+      postsMonth.textContent = '0';
+    }
+  }
+
+  // ==========================================
+  // CREATIVE PANEL - SOCIAL POSTING
+  // ==========================================
+
+  const postContent = document.getElementById('postContent');
+  const postImageUrl = document.getElementById('postImageUrl');
+  const postFacebook = document.getElementById('postFacebook');
+  const postInstagram = document.getElementById('postInstagram');
+  const postResult = document.getElementById('postResult');
+
+  function showPostResult(message, isError) {
+    if (!postResult) return;
+    postResult.textContent = message;
+    postResult.className = 'post-result ' + (isError ? 'error' : 'success');
+    postResult.style.display = 'block';
+    setTimeout(function() {
+      postResult.style.display = 'none';
+    }, 5000);
+  }
+
+  // Post to Facebook
+  if (postFacebook) {
+    postFacebook.onclick = async function() {
+      const message = postContent ? postContent.value.trim() : '';
+      const imageUrl = postImageUrl ? postImageUrl.value.trim() : '';
+
+      if (!message) {
+        showPostResult('נא להזין תוכן לפוסט', true);
+        return;
+      }
+
+      postFacebook.disabled = true;
+      postFacebook.textContent = 'מפרסם...';
+
+      try {
+        const body = { message };
+        if (imageUrl) body.imageUrl = imageUrl;
+
+        const response = await fetch(API_BASE + '/api/meta/facebook/post', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          showPostResult('הפוסט פורסם בהצלחה בפייסבוק!', false);
+          postContent.value = '';
+          postImageUrl.value = '';
+        } else {
+          showPostResult('שגיאה: ' + (data.message || 'לא ניתן לפרסם'), true);
+        }
+      } catch (error) {
+        showPostResult('שגיאת חיבור: ' + error.message, true);
+      }
+
+      postFacebook.disabled = false;
+      postFacebook.textContent = 'פרסם בפייסבוק';
     };
   }
 
-  // Initialize
+  // Post to Instagram
+  if (postInstagram) {
+    postInstagram.onclick = async function() {
+      const caption = postContent ? postContent.value.trim() : '';
+      const imageUrl = postImageUrl ? postImageUrl.value.trim() : '';
+
+      if (!imageUrl) {
+        showPostResult('נא להזין כתובת תמונה (חובה לאינסטגרם)', true);
+        return;
+      }
+
+      postInstagram.disabled = true;
+      postInstagram.textContent = 'מפרסם...';
+
+      try {
+        const response = await fetch(API_BASE + '/api/meta/instagram/post', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageUrl, caption })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          showPostResult('הפוסט פורסם בהצלחה באינסטגרם!', false);
+          postContent.value = '';
+          postImageUrl.value = '';
+        } else {
+          showPostResult('שגיאה: ' + (data.message || 'לא ניתן לפרסם'), true);
+        }
+      } catch (error) {
+        showPostResult('שגיאת חיבור: ' + error.message, true);
+      }
+
+      postInstagram.disabled = false;
+      postInstagram.textContent = 'פרסם באינסטגרם';
+    };
+  }
+
+  // ==========================================
+  // SETTINGS PAGE - LOAD CONNECTION STATUS
+  // ==========================================
+
+  async function loadSettingsStatus() {
+    // Claude status
+    const claudeStatus = document.getElementById('settingsClaudeStatus');
+    if (claudeStatus) {
+      try {
+        const response = await fetch(API_BASE + '/api/chat');
+        const data = await response.json();
+        if (data.status === 'ready') {
+          claudeStatus.innerHTML = '<span class="status-badge connected">מחובר</span>';
+        } else {
+          claudeStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
+        }
+      } catch (error) {
+        claudeStatus.innerHTML = '<span class="status-badge disconnected">שגיאה</span>';
+      }
+    }
+
+    // Shopify status
+    const shopifyStatus = document.getElementById('settingsShopifyStatus');
+    if (shopifyStatus) {
+      try {
+        const response = await fetch(API_BASE + '/api/shopify/test');
+        const data = await response.json();
+        if (data.success) {
+          const shopName = data.shop && data.shop.name ? data.shop.name : 'מחובר';
+          shopifyStatus.innerHTML = '<span class="status-badge connected">' + shopName + '</span>';
+        } else {
+          shopifyStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
+        }
+      } catch (error) {
+        shopifyStatus.innerHTML = '<span class="status-badge disconnected">שגיאה</span>';
+      }
+    }
+
+    // Meta status
+    const metaStatus = document.getElementById('settingsMetaStatus');
+    if (metaStatus) {
+      try {
+        const response = await fetch(API_BASE + '/api/meta/status');
+        const data = await response.json();
+        if (data.connected) {
+          const pageName = data.page && data.page.name ? data.page.name : 'מחובר';
+          metaStatus.innerHTML = '<span class="status-badge connected">' + pageName + '</span>';
+        } else if (data.configured) {
+          metaStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
+        } else {
+          metaStatus.innerHTML = '<span class="status-badge pending">לא מוגדר</span>';
+        }
+      } catch (error) {
+        metaStatus.innerHTML = '<span class="status-badge disconnected">שגיאה</span>';
+      }
+    }
+  }
+
+  // ==========================================
+  // INITIALIZATION
+  // ==========================================
+
+  // Initial load
   checkAllStatuses();
-  console.log('Dashboard initialized');
+  loadQuickStats();
+  loadSettingsStatus();
+
+  // Auto-refresh every 30 seconds
+  setInterval(function() {
+    checkAllStatuses();
+    loadQuickStats();
+  }, 30000);
+
+  console.log('Dashboard initialized with auto-refresh');
 });

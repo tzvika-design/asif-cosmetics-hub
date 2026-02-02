@@ -252,6 +252,22 @@
     .status-badge.disconnected { background: rgba(239,68,68,0.15); color: var(--error); }
     .status-badge.pending { background: rgba(245,158,11,0.15); color: var(--warn); }
 
+    /* Post Result Messages */
+    .post-result {
+      text-align: center;
+      font-weight: 500;
+    }
+    .post-result.success {
+      background: rgba(34,197,94,0.15);
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+    .post-result.error {
+      background: rgba(239,68,68,0.15);
+      color: var(--error);
+      border: 1px solid var(--error);
+    }
+
     /* Quick Stats */
     .section-title {
       font-size: 1.1rem;
@@ -674,7 +690,7 @@
         <h2 class="section-title">📊 סטטיסטיקות מהירות</h2>
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-value">--</div>
+            <div class="stat-value" id="statOrdersToday">--</div>
             <div class="stat-label">הזמנות היום</div>
           </div>
           <div class="stat-card">
@@ -686,7 +702,7 @@
             <div class="stat-label">פניות לקוחות</div>
           </div>
           <div class="stat-card">
-            <div class="stat-value">--</div>
+            <div class="stat-value" id="statPostsMonth">0</div>
             <div class="stat-label">פוסטים החודש</div>
           </div>
         </div>
@@ -754,13 +770,26 @@
       <div class="page" id="page-creative">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">🎨 יצירת תוכן קריאטיבי</span>
+            <span class="panel-title">🎨 פרסום ברשתות חברתיות</span>
           </div>
           <div class="panel-content">
-            <p style="color: var(--text-muted); text-align: center; padding: 40px;">
-              סוכן הקריאטיב יושק בקרוב...<br>
-              יוכל ליצור פוסטים לפייסבוק ואינסטגרם באופן אוטומטי
-            </p>
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">תוכן הפוסט</label>
+              <textarea id="postContent" class="chat-input" style="width: 100%; min-height: 120px; resize: vertical;" placeholder="כתוב כאן את תוכן הפוסט..."></textarea>
+            </div>
+            <div class="form-group" style="margin-bottom: 20px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">כתובת תמונה (URL)</label>
+              <input type="text" id="postImageUrl" class="chat-input" style="width: 100%;" placeholder="https://example.com/image.jpg (חובה לאינסטגרם)">
+            </div>
+            <div id="postResult" class="post-result" style="display: none; padding: 12px; border-radius: 8px; margin-bottom: 16px;"></div>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-primary" id="postFacebook" style="background: #1877f2;">
+                📘 פרסם בפייסבוק
+              </button>
+              <button type="button" class="btn btn-primary" id="postInstagram" style="background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);">
+                📷 פרסם באינסטגרם
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -828,17 +857,21 @@
       <div class="page" id="page-settings">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">⚙️ הגדרות מערכת</span>
+            <span class="panel-title">⚙️ סטטוס חיבורים</span>
           </div>
           <div class="panel-content">
+            <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem;">
+              כל ההגדרות מוגדרות דרך משתני סביבה ב-Railway. להלן סטטוס החיבורים הנוכחי:
+            </p>
+
             <div class="settings-section">
               <h3>🤖 Claude API</h3>
               <div class="settings-row">
                 <div class="settings-label">
-                  API Key
-                  <small>מפתח API מ-Anthropic Console</small>
+                  סטטוס חיבור
+                  <small>CLAUDE_API_KEY</small>
                 </div>
-                <input type="password" class="settings-input" id="settingsClaudeKey" placeholder="sk-ant-...">
+                <div id="settingsClaudeStatus"><span class="status-badge pending">בודק...</span></div>
               </div>
             </div>
 
@@ -846,17 +879,10 @@
               <h3>🛒 Shopify</h3>
               <div class="settings-row">
                 <div class="settings-label">
-                  Store URL
-                  <small>כתובת החנות שלך</small>
+                  סטטוס חיבור
+                  <small>SHOPIFY_ACCESS_TOKEN</small>
                 </div>
-                <input type="text" class="settings-input" id="settingsShopifyUrl" placeholder="your-store.myshopify.com">
-              </div>
-              <div class="settings-row">
-                <div class="settings-label">
-                  Access Token
-                  <small>טוקן גישה ל-API</small>
-                </div>
-                <input type="password" class="settings-input" id="settingsShopifyToken" placeholder="shpat_...">
+                <div id="settingsShopifyStatus"><span class="status-badge pending">בודק...</span></div>
               </div>
             </div>
 
@@ -864,10 +890,10 @@
               <h3>📱 Meta (Facebook/Instagram)</h3>
               <div class="settings-row">
                 <div class="settings-label">
-                  Access Token
-                  <small>טוקן גישה ל-Graph API</small>
+                  סטטוס חיבור
+                  <small>META_PAGE_ACCESS_TOKEN</small>
                 </div>
-                <input type="password" class="settings-input" id="settingsMetaToken" placeholder="EAA...">
+                <div id="settingsMetaStatus"><span class="status-badge pending">בודק...</span></div>
               </div>
             </div>
 
@@ -875,15 +901,17 @@
               <h3>💬 WhatsApp Business</h3>
               <div class="settings-row">
                 <div class="settings-label">
-                  Phone Number ID
-                  <small>מזהה מספר הטלפון</small>
+                  סטטוס חיבור
+                  <small>WHATSAPP_TOKEN</small>
                 </div>
-                <input type="text" class="settings-input" id="settingsWhatsappId" placeholder="123456789...">
+                <div><span class="status-badge pending">לא מוגדר</span></div>
               </div>
             </div>
 
-            <div style="margin-top: 24px;">
-              <button class="btn btn-primary" id="saveSettings">💾 שמור הגדרות</button>
+            <div style="margin-top: 24px; padding: 16px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
+              <p style="font-size: 0.85rem; color: var(--text-muted);">
+                💡 <strong>לעדכון הגדרות:</strong> היכנס ל-Railway Dashboard → Variables והוסף/עדכן את המשתנים הרלוונטיים.
+              </p>
             </div>
           </div>
         </div>
