@@ -2,8 +2,11 @@
 // External file to comply with CSP
 
 document.addEventListener('DOMContentLoaded', function() {
+  console.log('=== Dashboard Loading ===');
+
   // API Base URL
   const API_BASE = window.location.origin;
+  console.log('API_BASE:', API_BASE);
 
   // Page Navigation
   const navItems = document.querySelectorAll('.nav-item');
@@ -25,15 +28,12 @@ document.addEventListener('DOMContentLoaded', function() {
       const page = item.dataset.page;
       if (!page) return;
 
-      // Update nav
       navItems.forEach(function(n) { n.classList.remove('active'); });
       item.classList.add('active');
 
-      // Update page
       pages.forEach(function(p) { p.classList.remove('active'); });
       document.getElementById('page-' + page).classList.add('active');
 
-      // Update title
       pageTitle.textContent = pageTitles[page] || 'דשבורד';
     });
   });
@@ -85,13 +85,11 @@ document.addEventListener('DOMContentLoaded', function() {
     chatSend.textContent = 'שלח';
   }
 
-  // Button click handler
   chatSend.onclick = function(e) {
     e.preventDefault();
     sendMessage();
   };
 
-  // Enter key handler
   chatInput.onkeydown = function(e) {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -100,30 +98,46 @@ document.addEventListener('DOMContentLoaded', function() {
   };
 
   // ==========================================
-  // STATUS CHECKING
+  // STATUS CHECKING WITH DEBUG
   // ==========================================
 
   // Check Claude API Status
   async function checkClaudeStatus() {
+    console.log('Checking Claude status...');
+
     const statusCard = document.getElementById('statusClaude');
-    if (!statusCard) return;
+    console.log('statusClaude element:', statusCard);
+
+    if (!statusCard) {
+      console.error('Claude status card not found!');
+      return;
+    }
+
     const badge = statusCard.querySelector('.status-badge');
     const desc = statusCard.querySelector('.status-card-content p');
+    console.log('Badge element:', badge);
+    console.log('Desc element:', desc);
 
     try {
+      console.log('Fetching:', API_BASE + '/api/chat');
       const response = await fetch(API_BASE + '/api/chat');
+      console.log('Claude response status:', response.status);
+
       const data = await response.json();
+      console.log('Claude data:', data);
 
       if (data.status === 'ready') {
-        badge.textContent = 'מחובר';
+        console.log('Claude is ready - updating badge');
+        badge.textContent = '✓ מחובר';
         badge.className = 'status-badge connected';
-        desc.textContent = 'בינה מלאכותית פעילה';
+        if (desc) desc.textContent = 'בינה מלאכותית פעילה';
       } else {
+        console.log('Claude not ready');
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
-        desc.textContent = 'בינה מלאכותית';
       }
     } catch (error) {
+      console.error('Claude status error:', error);
       badge.textContent = 'שגיאה';
       badge.className = 'status-badge disconnected';
     }
@@ -131,27 +145,42 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Check Shopify Status
   async function checkShopifyStatus() {
+    console.log('Checking Shopify status...');
+
     const statusCard = document.getElementById('statusShopify');
-    if (!statusCard) return;
+    console.log('statusShopify element:', statusCard);
+
+    if (!statusCard) {
+      console.error('Shopify status card not found!');
+      return;
+    }
+
     const badge = statusCard.querySelector('.status-badge');
     const desc = statusCard.querySelector('.status-card-content p');
 
     try {
+      console.log('Fetching:', API_BASE + '/api/shopify/test');
       const response = await fetch(API_BASE + '/api/shopify/test');
+      console.log('Shopify response status:', response.status);
+
       const data = await response.json();
+      console.log('Shopify data:', data);
 
       if (data.success) {
-        badge.textContent = 'מחובר';
+        console.log('Shopify connected - updating badge');
+        badge.textContent = '✓ מחובר';
         badge.className = 'status-badge connected';
-        if (data.shop && data.shop.name) {
+        if (desc && data.shop && data.shop.name) {
           desc.textContent = data.shop.name;
         }
       } else {
+        console.log('Shopify not connected');
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
-        desc.textContent = 'חנות אונליין';
+        if (desc) desc.textContent = 'חנות אונליין';
       }
     } catch (error) {
+      console.error('Shopify status error:', error);
       badge.textContent = 'שגיאה';
       badge.className = 'status-badge disconnected';
     }
@@ -159,43 +188,61 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Check Meta Status
   async function checkMetaStatus() {
+    console.log('Checking Meta status...');
+
     const statusCard = document.getElementById('statusMeta');
-    if (!statusCard) return;
+    console.log('statusMeta element:', statusCard);
+
+    if (!statusCard) {
+      console.error('Meta status card not found!');
+      return;
+    }
+
     const badge = statusCard.querySelector('.status-badge');
     const desc = statusCard.querySelector('.status-card-content p');
 
     try {
+      console.log('Fetching:', API_BASE + '/api/meta/status');
       const response = await fetch(API_BASE + '/api/meta/status');
+      console.log('Meta response status:', response.status);
+
       const data = await response.json();
+      console.log('Meta data:', data);
 
       if (data.connected) {
-        badge.textContent = 'מחובר';
+        console.log('Meta connected - updating badge');
+        badge.textContent = '✓ מחובר';
         badge.className = 'status-badge connected';
-        if (data.page && data.page.name) {
+        if (desc && data.page && data.page.name) {
           desc.textContent = data.page.name;
         }
       } else if (data.configured) {
+        console.log('Meta configured but not connected');
         badge.textContent = 'לא מחובר';
         badge.className = 'status-badge disconnected';
-        desc.textContent = 'פייסבוק ואינסטגרם';
       } else {
+        console.log('Meta not configured');
         badge.textContent = 'לא מוגדר';
         badge.className = 'status-badge pending';
-        desc.textContent = 'פייסבוק ואינסטגרם';
       }
     } catch (error) {
+      console.error('Meta status error:', error);
       badge.textContent = 'שגיאה';
       badge.className = 'status-badge disconnected';
     }
   }
 
-  // Check all service statuses
+  // Check all statuses
   async function checkAllStatuses() {
-    await Promise.all([
-      checkClaudeStatus(),
-      checkShopifyStatus(),
-      checkMetaStatus()
-    ]);
+    console.log('=== Checking all statuses ===');
+    try {
+      await checkClaudeStatus();
+      await checkShopifyStatus();
+      await checkMetaStatus();
+      console.log('=== All statuses checked ===');
+    } catch (error) {
+      console.error('Error checking statuses:', error);
+    }
   }
 
   // ==========================================
@@ -203,7 +250,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // ==========================================
 
   async function loadQuickStats() {
-    // Load today's orders from Shopify
+    console.log('Loading quick stats...');
     const ordersToday = document.getElementById('statOrdersToday');
     const postsMonth = document.getElementById('statPostsMonth');
 
@@ -211,9 +258,9 @@ document.addEventListener('DOMContentLoaded', function() {
       try {
         const response = await fetch(API_BASE + '/api/orders');
         const data = await response.json();
+        console.log('Orders data:', data);
 
         if (data.success && data.data) {
-          // Count today's orders
           const today = new Date().toISOString().split('T')[0];
           const todayOrders = data.data.filter(function(order) {
             return order.created_at && order.created_at.startsWith(today);
@@ -223,11 +270,11 @@ document.addEventListener('DOMContentLoaded', function() {
           ordersToday.textContent = '0';
         }
       } catch (error) {
+        console.error('Orders error:', error);
         ordersToday.textContent = '--';
       }
     }
 
-    // Posts this month (placeholder for now)
     if (postsMonth) {
       postsMonth.textContent = '0';
     }
@@ -253,7 +300,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 5000);
   }
 
-  // Post to Facebook
   if (postFacebook) {
     postFacebook.onclick = async function() {
       const message = postContent ? postContent.value.trim() : '';
@@ -295,7 +341,6 @@ document.addEventListener('DOMContentLoaded', function() {
     };
   }
 
-  // Post to Instagram
   if (postInstagram) {
     postInstagram.onclick = async function() {
       const caption = postContent ? postContent.value.trim() : '';
@@ -335,18 +380,22 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   // ==========================================
-  // SETTINGS PAGE - LOAD CONNECTION STATUS
+  // SETTINGS PAGE - CONNECTION STATUS
   // ==========================================
 
   async function loadSettingsStatus() {
-    // Claude status
+    console.log('Loading settings status...');
+
     const claudeStatus = document.getElementById('settingsClaudeStatus');
+    const shopifyStatus = document.getElementById('settingsShopifyStatus');
+    const metaStatus = document.getElementById('settingsMetaStatus');
+
     if (claudeStatus) {
       try {
         const response = await fetch(API_BASE + '/api/chat');
         const data = await response.json();
         if (data.status === 'ready') {
-          claudeStatus.innerHTML = '<span class="status-badge connected">מחובר</span>';
+          claudeStatus.innerHTML = '<span class="status-badge connected">✓ מחובר</span>';
         } else {
           claudeStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
         }
@@ -355,15 +404,13 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
 
-    // Shopify status
-    const shopifyStatus = document.getElementById('settingsShopifyStatus');
     if (shopifyStatus) {
       try {
         const response = await fetch(API_BASE + '/api/shopify/test');
         const data = await response.json();
         if (data.success) {
           const shopName = data.shop && data.shop.name ? data.shop.name : 'מחובר';
-          shopifyStatus.innerHTML = '<span class="status-badge connected">' + shopName + '</span>';
+          shopifyStatus.innerHTML = '<span class="status-badge connected">✓ ' + shopName + '</span>';
         } else {
           shopifyStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
         }
@@ -372,15 +419,13 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
 
-    // Meta status
-    const metaStatus = document.getElementById('settingsMetaStatus');
     if (metaStatus) {
       try {
         const response = await fetch(API_BASE + '/api/meta/status');
         const data = await response.json();
         if (data.connected) {
           const pageName = data.page && data.page.name ? data.page.name : 'מחובר';
-          metaStatus.innerHTML = '<span class="status-badge connected">' + pageName + '</span>';
+          metaStatus.innerHTML = '<span class="status-badge connected">✓ ' + pageName + '</span>';
         } else if (data.configured) {
           metaStatus.innerHTML = '<span class="status-badge disconnected">לא מחובר</span>';
         } else {
@@ -396,16 +441,19 @@ document.addEventListener('DOMContentLoaded', function() {
   // INITIALIZATION
   // ==========================================
 
-  // Initial load
+  console.log('Starting initialization...');
+
+  // Run status checks immediately
   checkAllStatuses();
   loadQuickStats();
   loadSettingsStatus();
 
   // Auto-refresh every 30 seconds
   setInterval(function() {
+    console.log('Auto-refresh triggered');
     checkAllStatuses();
     loadQuickStats();
   }, 30000);
 
-  console.log('Dashboard initialized with auto-refresh');
+  console.log('=== Dashboard Fully Initialized ===');
 });
