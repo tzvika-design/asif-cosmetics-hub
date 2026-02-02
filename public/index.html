@@ -367,11 +367,6 @@
       font-size: 0.85rem;
     }
 
-    .chat-input-area {
-      display: flex;
-      gap: 12px;
-    }
-
     .chat-input {
       flex: 1;
       padding: 12px 16px;
@@ -399,7 +394,12 @@
       transition: all 0.2s;
       display: flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
+      position: relative;
+      z-index: 10;
+      user-select: none;
+      -webkit-user-select: none;
     }
 
     .btn-primary {
@@ -409,11 +409,29 @@
 
     .btn-primary:hover {
       background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
     }
 
     .btn-primary:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      transform: none;
+    }
+
+    .chat-input-area {
+      display: flex;
+      gap: 12px;
+      position: relative;
+      z-index: 10;
+    }
+
+    .chat-input-area .btn {
+      min-width: 80px;
+      flex-shrink: 0;
     }
 
     /* Activity Feed */
@@ -687,8 +705,8 @@
                 </div>
               </div>
               <div class="chat-input-area">
-                <input type="text" class="chat-input" id="chatInput" placeholder="הקלד הודעה...">
-                <button class="btn btn-primary" id="chatSend">שלח</button>
+                <input type="text" class="chat-input" id="chatInput" placeholder="הקלד הודעה..." autocomplete="off">
+                <button type="button" class="btn btn-primary" id="chatSend">שלח</button>
               </div>
             </div>
           </div>
@@ -874,125 +892,153 @@
   </main>
 
   <script>
-    // API Base URL
-    const API_BASE = window.location.origin;
+    document.addEventListener('DOMContentLoaded', function() {
+      // API Base URL
+      const API_BASE = window.location.origin;
 
-    // Page Navigation
-    const navItems = document.querySelectorAll('.nav-item');
-    const pages = document.querySelectorAll('.page');
-    const pageTitle = document.getElementById('pageTitle');
+      // Page Navigation
+      const navItems = document.querySelectorAll('.nav-item');
+      const pages = document.querySelectorAll('.page');
+      const pageTitle = document.getElementById('pageTitle');
 
-    const pageTitles = {
-      'dashboard': 'דשבורד ראשי',
-      'creative': 'קריאטיב',
-      'sales': 'מכירות',
-      'marketing': 'שיווק',
-      'inventory': 'מלאי',
-      'shopify': 'Shopify',
-      'settings': 'הגדרות'
-    };
+      const pageTitles = {
+        'dashboard': 'דשבורד ראשי',
+        'creative': 'קריאטיב',
+        'sales': 'מכירות',
+        'marketing': 'שיווק',
+        'inventory': 'מלאי',
+        'shopify': 'Shopify',
+        'settings': 'הגדרות'
+      };
 
-    navItems.forEach(item => {
-      item.addEventListener('click', () => {
-        const page = item.dataset.page;
-        if (!page) return;
+      navItems.forEach(function(item) {
+        item.addEventListener('click', function() {
+          const page = item.dataset.page;
+          if (!page) return;
 
-        // Update nav
-        navItems.forEach(n => n.classList.remove('active'));
-        item.classList.add('active');
+          // Update nav
+          navItems.forEach(function(n) { n.classList.remove('active'); });
+          item.classList.add('active');
 
-        // Update page
-        pages.forEach(p => p.classList.remove('active'));
-        document.getElementById(`page-${page}`).classList.add('active');
+          // Update page
+          pages.forEach(function(p) { p.classList.remove('active'); });
+          document.getElementById('page-' + page).classList.add('active');
 
-        // Update title
-        pageTitle.textContent = pageTitles[page] || 'דשבורד';
-      });
-    });
-
-    // Chat Functionality
-    const chatInput = document.getElementById('chatInput');
-    const chatSend = document.getElementById('chatSend');
-    const chatMessages = document.getElementById('chatMessages');
-
-    const addMessage = (text, type) => {
-      const msg = document.createElement('div');
-      msg.className = `chat-message ${type}`;
-      msg.textContent = text;
-      chatMessages.appendChild(msg);
-      chatMessages.scrollTop = chatMessages.scrollHeight;
-    };
-
-    const sendMessage = async () => {
-      const message = chatInput.value.trim();
-      if (!message) return;
-
-      // Add user message
-      addMessage(message, 'user');
-      chatInput.value = '';
-      chatSend.disabled = true;
-      chatSend.innerHTML = '<div class="spinner"></div>';
-
-      try {
-        const response = await fetch(`${API_BASE}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message,
-            system: 'You are a helpful assistant for Asif Cosmetics. Respond in Hebrew when the user writes in Hebrew.'
-          })
+          // Update title
+          pageTitle.textContent = pageTitles[page] || 'דשבורד';
         });
+      });
 
-        const data = await response.json();
+      // Chat Functionality
+      const chatInput = document.getElementById('chatInput');
+      const chatSend = document.getElementById('chatSend');
+      const chatMessages = document.getElementById('chatMessages');
 
-        if (data.success) {
-          addMessage(data.response, 'assistant');
-        } else {
-          addMessage('שגיאה: ' + (data.message || 'Unknown error'), 'system');
-        }
-      } catch (error) {
-        addMessage('שגיאת חיבור: ' + error.message, 'system');
+      console.log('Chat elements:', { chatInput, chatSend, chatMessages });
+
+      function addMessage(text, type) {
+        const msg = document.createElement('div');
+        msg.className = 'chat-message ' + type;
+        msg.textContent = text;
+        chatMessages.appendChild(msg);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
       }
 
-      chatSend.disabled = false;
-      chatSend.innerHTML = 'שלח';
-    };
+      async function sendMessage() {
+        console.log('sendMessage called');
+        const message = chatInput.value.trim();
+        console.log('Message:', message);
 
-    chatSend.addEventListener('click', sendMessage);
-    chatInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') sendMessage();
-    });
+        if (!message) {
+          console.log('Empty message, returning');
+          return;
+        }
 
-    // Check Claude API Status
-    const checkClaudeStatus = async () => {
-      const statusCard = document.getElementById('statusClaude');
-      const badge = statusCard.querySelector('.status-badge');
+        // Add user message
+        addMessage(message, 'user');
+        chatInput.value = '';
+        chatSend.disabled = true;
+        chatSend.textContent = '...';
 
-      try {
-        const response = await fetch(`${API_BASE}/api/chat`);
-        const data = await response.json();
+        try {
+          console.log('Sending to API:', API_BASE + '/api/chat');
+          const response = await fetch(API_BASE + '/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: message,
+              system: 'You are a helpful assistant for Asif Cosmetics. Respond in Hebrew when the user writes in Hebrew.'
+            })
+          });
 
-        if (data.status === 'ready') {
-          badge.textContent = 'מחובר';
-          badge.className = 'status-badge connected';
-        } else {
-          badge.textContent = 'לא מחובר';
+          console.log('Response status:', response.status);
+          const data = await response.json();
+          console.log('Response data:', data);
+
+          if (data.success) {
+            addMessage(data.response, 'assistant');
+          } else {
+            addMessage('שגיאה: ' + (data.message || 'Unknown error'), 'system');
+          }
+        } catch (error) {
+          console.error('Fetch error:', error);
+          addMessage('שגיאת חיבור: ' + error.message, 'system');
+        }
+
+        chatSend.disabled = false;
+        chatSend.textContent = 'שלח';
+      }
+
+      // Button click handler
+      chatSend.onclick = function(e) {
+        console.log('Button clicked');
+        e.preventDefault();
+        sendMessage();
+      };
+
+      // Enter key handler
+      chatInput.onkeydown = function(e) {
+        if (e.key === 'Enter') {
+          console.log('Enter pressed');
+          e.preventDefault();
+          sendMessage();
+        }
+      };
+
+      // Check Claude API Status
+      async function checkClaudeStatus() {
+        const statusCard = document.getElementById('statusClaude');
+        const badge = statusCard.querySelector('.status-badge');
+
+        try {
+          const response = await fetch(API_BASE + '/api/chat');
+          const data = await response.json();
+
+          if (data.status === 'ready') {
+            badge.textContent = 'מחובר';
+            badge.className = 'status-badge connected';
+          } else {
+            badge.textContent = 'לא מחובר';
+            badge.className = 'status-badge disconnected';
+          }
+        } catch (error) {
+          badge.textContent = 'שגיאה';
           badge.className = 'status-badge disconnected';
         }
-      } catch (error) {
-        badge.textContent = 'שגיאה';
-        badge.className = 'status-badge disconnected';
       }
-    };
 
-    // Settings
-    const saveSettings = document.getElementById('saveSettings');
-    saveSettings.addEventListener('click', () => {
-      alert('ההגדרות נשמרו!\n\nשים לב: הגדרות אלו צריכות להיקבע גם בסביבת השרת (Railway).');
+      // Settings
+      const saveSettings = document.getElementById('saveSettings');
+      if (saveSettings) {
+        saveSettings.onclick = function() {
+          alert('ההגדרות נשמרו!\n\nשים לב: הגדרות אלו צריכות להיקבע גם בסביבת השרת (Railway).');
+        };
+      }
+
+      // Initialize
+      checkClaudeStatus();
+      console.log('Dashboard initialized');
     });
-
-    // Initialize
-    checkClaudeStatus();
   </script>
 </body>
 </html>
