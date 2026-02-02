@@ -86,42 +86,12 @@ class ShopifyREST {
   }
 
   /**
-   * Valid sales channels - exclude import tools like Matrixify
-   */
-  static VALID_SALES_CHANNELS = [
-    'web',                    // Online Store
-    'shopify_draft_order',    // Draft Orders
-    'subscription_contract',  // Subscription apps (Joy, etc.)
-    'pos',                    // Point of Sale
-    'iphone',                 // Shopify mobile app
-    'android',                // Shopify mobile app
-    'mobile',                 // Mobile orders
-    'api'                     // API orders (legitimate)
-  ];
-
-  /**
-   * Import tools to exclude from stats
-   */
-  static EXCLUDED_SOURCES = [
-    'Matrixify App',
-    'matrixify',
-    'Excelify',
-    'Import'
-  ];
-
-  /**
-   * Check if order is from a valid sales channel (not imported)
+   * Check if order is from a valid sales channel (not imported via Matrixify)
    */
   isValidSalesOrder(order) {
     const source = (order.source_name || '').toLowerCase();
-
-    // Exclude known import tools
-    for (const excluded of ShopifyREST.EXCLUDED_SOURCES) {
-      if (source.includes(excluded.toLowerCase())) {
-        return false;
-      }
-    }
-
+    // Only exclude Matrixify imports - everything else is valid
+    if (source.includes('matrixify')) return false;
     return true;
   }
 

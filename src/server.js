@@ -210,14 +210,11 @@ app.get('/api/shopify/2025', async (req, res) => {
       if (nextUrl) await new Promise(r => setTimeout(r, 100));
     }
 
-    // Excluded import sources (like Matrixify)
-    const EXCLUDED_SOURCES = ['Matrixify App', 'matrixify', 'Excelify', 'Import'];
-
+    // ONLY exclude Matrixify - nothing else
     const isValidSalesOrder = (order) => {
       const source = (order.source_name || '').toLowerCase();
-      for (const excluded of EXCLUDED_SOURCES) {
-        if (source.includes(excluded.toLowerCase())) return false;
-      }
+      // Only exclude Matrixify imports
+      if (source.includes('matrixify')) return false;
       return true;
     };
 
@@ -431,6 +428,63 @@ app.get('/api/shopify/compare-2025', async (req, res) => {
     res.json(results);
   } catch (e) {
     res.json({ error: e.message, results });
+  }
+});
+
+// Check Jan-Feb 2025 orders
+app.get('/api/shopify/jan-feb-2025', async (req, res) => {
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!token) return res.json({ error: 'No token' });
+
+  const allOrders = [];
+  let page = 0;
+  let nextUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&financial_status=paid&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-02-28T23:59:59Z';
+
+  try {
+    while (nextUrl && page < 50) {
+      page++;
+      const r = await axios.get(nextUrl, {
+        headers: { 'X-Shopify-Access-Token': token },
+        timeout: 15000
+      });
+      allOrders.push(...(r.data.orders || []));
+
+      const link = r.headers.link;
+      if (link && link.includes('rel="next"')) {
+        const m = link.match(/<([^>]+)>;\s*rel="next"/);
+        nextUrl = m ? m[1] : null;
+      } else {
+        nextUrl = null;
+      }
+      if (nextUrl) await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Count by source
+    const sourceCounts = {};
+    allOrders.forEach(o => {
+      const source = o.source_name || 'unknown';
+      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+    });
+
+    // Non-Matrixify orders
+    const realOrders = allOrders.filter(o => !(o.source_name || '').toLowerCase().includes('matrixify'));
+
+    res.json({
+      period: 'January-February 2025',
+      totalOrders: allOrders.length,
+      realOrders: realOrders.length,
+      matrixifyOrders: allOrders.length - realOrders.length,
+      bySource: sourceCounts,
+      realSales: Math.round(realOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0)),
+      sample: realOrders.slice(0, 5).map(o => ({
+        name: o.name,
+        date: o.created_at,
+        source: o.source_name,
+        total: o.total_price
+      }))
+    });
+  } catch (e) {
+    res.json({ error: e.message });
   }
 });
 
