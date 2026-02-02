@@ -196,28 +196,22 @@ class ShopifyGraphQL {
       }
     `;
 
-    // Build date query - extend range by 1 day to handle timezone differences
-    // Shopify stores dates in store timezone (Israel +02:00), server runs in UTC
-    const adjustedStart = new Date(startDate);
-    adjustedStart.setDate(adjustedStart.getDate() - 1); // 1 day earlier
-    const adjustedEnd = new Date(endDate);
-    adjustedEnd.setDate(adjustedEnd.getDate() + 1); // 1 day later
+    // IMPORTANT: Shopify GraphQL query filter often returns 0 results with date ranges
+    // Solution: Fetch ALL orders without date filter, then filter in JavaScript
+    // This is more reliable and works with any Shopify store configuration
 
-    const startISO = adjustedStart.toISOString().split('T')[0];
-    const endISO = adjustedEnd.toISOString().split('T')[0];
-    const dateQuery = `created_at:>=${startISO} created_at:<=${endISO}`;
-
-    console.log(`[ShopifyGraphQL] getOrders query: "${dateQuery}" (original: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]})`);
+    console.log(`[ShopifyGraphQL] getOrders: Fetching all orders (will filter to ${startDate.toISOString().split('T')[0]} - ${endDate.toISOString().split('T')[0]} in JS)`);
 
     while (hasNextPage) {
       pageCount++;
       console.log(`[ShopifyGraphQL] Fetching orders page ${pageCount}...`);
 
       try {
+        // Fetch WITHOUT date filter - filter in JavaScript instead
         const data = await this.query(query, {
           first: 250,
           after: cursor,
-          query: dateQuery
+          query: null  // No query filter - fetch all
         });
 
         console.log(`[ShopifyGraphQL] Page ${pageCount} returned ${data.orders?.nodes?.length || 0} orders`);
@@ -238,16 +232,32 @@ class ShopifyGraphQL {
       }
     }
 
+    console.log(`[ShopifyGraphQL] Fetched ${orders.length} total orders from Shopify`);
+
+    // Filter orders by date range in JavaScript (since GraphQL query filter may not work)
+    const startTime2 = startDate.getTime();
+    const endTime2 = endDate.getTime();
+
+    const filteredOrders = orders.filter(order => {
+      const orderDate = new Date(order.createdAt).getTime();
+      return orderDate >= startTime2 && orderDate <= endTime2;
+    });
+
+    console.log(`[ShopifyGraphQL] After date filter: ${filteredOrders.length} orders (${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]})`);
+
+    // Use filtered orders for calculations
+    const ordersToProcess = filteredOrders;
+
     // Calculate totals
     const totals = {
       grossSales: 0,      // Before discounts
       netSales: 0,        // After discounts (what customer paid)
       discounts: 0,
       tax: 0,
-      orderCount: orders.length
+      orderCount: ordersToProcess.length
     };
 
-    orders.forEach(order => {
+    ordersToProcess.forEach(order => {
       const subtotal = parseFloat(order.subtotalPriceSet?.shopMoney?.amount || 0);
       const total = parseFloat(order.totalPriceSet?.shopMoney?.amount || 0);
       const discount = parseFloat(order.totalDiscountsSet?.shopMoney?.amount || 0);
@@ -259,12 +269,12 @@ class ShopifyGraphQL {
       totals.tax += tax;
     });
 
-    totals.avgOrderValue = orders.length > 0 ? totals.netSales / orders.length : 0;
+    totals.avgOrderValue = ordersToProcess.length > 0 ? totals.netSales / ordersToProcess.length : 0;
 
-    console.log(`[ShopifyGraphQL] getOrders COMPLETE: ${orders.length} orders, ₪${Math.round(totals.netSales)} total`);
+    console.log(`[ShopifyGraphQL] getOrders COMPLETE: ${ordersToProcess.length} orders in date range, ₪${Math.round(totals.netSales)} total`);
 
     const result = {
-      orders,
+      orders: ordersToProcess,
       totals,
       period: {
         start: this.formatDateDisplay(startDate),
@@ -276,7 +286,7 @@ class ShopifyGraphQL {
     // Cache the result
     cache.set(cacheKey, result, TTL.ORDERS);
 
-    this.logRequest('getOrders', { start: startStr, end: endStr }, orders.length, Date.now() - startTime);
+    this.logRequest('getOrders', { start: startStr, end: endStr }, ordersToProcess.length, Date.now() - startTime);
 
     return result;
   }
