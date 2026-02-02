@@ -11,6 +11,7 @@ const agentRoutes = require('./routes/agents');
 const webhookRoutes = require('./routes/webhooks');
 const chatRoutes = require('./routes/chat');
 const shopifyAuthRoutes = require('./routes/shopify-auth');
+const shopifyAnalyticsRoutes = require('./routes/shopify-analytics');
 const metaRoutes = require('./routes/meta');
 
 const app = express();
@@ -49,6 +50,7 @@ app.get('/health', (req, res) => {
 app.use('/api', apiRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/shopify', shopifyAuthRoutes);
+app.use('/api/shopify', shopifyAnalyticsRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/agents', agentRoutes);
 app.use('/webhooks', webhookRoutes);
