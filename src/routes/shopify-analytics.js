@@ -101,36 +101,46 @@ function getDateRange(startDate, endDate, period) {
 
   switch (period) {
     case 'today':
-      return { start: today, end: now };
+      // Today only (start of today to end of today)
+      const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      return { start: today, end: todayEnd };
+
     case 'week':
-      // Week to Date (Sunday of current week to now)
+      // This Week = Sunday of current week to today
       const dayOfWeek = today.getDay(); // 0 = Sunday
-      const weekStart = new Date(today.getTime() - dayOfWeek * 24 * 60 * 60 * 1000);
+      const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dayOfWeek);
       return { start: weekStart, end: now };
+
     case 'month':
-      // Month to Date (1st of current month to now)
+      // This Month = 1st of current month to today
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       return { start: monthStart, end: now };
+
+    case 'lastMonth':
+      // Last Month = Full previous month (1st to last day)
+      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      return { start: lastMonthStart, end: lastMonthEnd };
+
     case 'year':
-      // Year to Date (Jan 1 of current year to now)
+      // This Year = Jan 1st of current year to today
       const yearStart = new Date(now.getFullYear(), 0, 1);
       return { start: yearStart, end: now };
-    case 'lastMonth':
-      // Last Month (full previous month)
-      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-      return { start: lastMonthStart, end: lastMonthEnd };
+
     case 'lastYear':
-      // Last Year (full previous year)
+      // Last Year = Full previous year (Jan 1 to Dec 31)
       const lastYearStart = new Date(now.getFullYear() - 1, 0, 1);
-      const lastYearEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
+      const lastYearEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
       return { start: lastYearStart, end: lastYearEnd };
+
     case '30days':
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+
     case '90days':
       return { start: new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000), end: now };
+
     default:
-      // Default to Month to Date
+      // Default to This Month
       const defaultMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       return { start: defaultMonthStart, end: now };
   }
@@ -653,6 +663,97 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
+// Helper function to fetch ALL discount codes from Shopify
+async function fetchAllDiscountCodes(baseUrl, headers) {
+  const allCoupons = [];
+
+  try {
+    // Fetch all price rules (with pagination)
+    let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
+    let hasMore = true;
+
+    while (hasMore) {
+      console.log(`[Coupons] Fetching price rules...`);
+      const priceRulesResponse = await axios.get(priceRulesUrl, {
+        headers,
+        timeout: 30000
+      });
+
+      const rules = priceRulesResponse.data.price_rules || [];
+      console.log(`[Coupons] Got ${rules.length} price rules`);
+
+      // For each rule, fetch its discount codes
+      for (const rule of rules) {
+        try {
+          // Small delay to avoid rate limiting
+          await new Promise(r => setTimeout(r, 200));
+
+          const codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
+          const codesResponse = await axios.get(codesUrl, {
+            headers,
+            timeout: 15000
+          });
+
+          const codes = codesResponse.data.discount_codes || [];
+
+          for (const c of codes) {
+            allCoupons.push({
+              id: c.id,
+              priceRuleId: rule.id,
+              code: c.code,
+              ruleTitle: rule.title || '',
+              value: rule.value,
+              valueType: rule.value_type,
+              targetType: rule.target_type,
+              usageCount: c.usage_count || 0,
+              usageLimit: rule.usage_limit,
+              startsAt: rule.starts_at,
+              endsAt: rule.ends_at,
+              isActive: isDiscountActive(rule),
+              status: getDiscountStatus(rule),
+              minimumAmount: rule.prerequisite_subtotal_range?.greater_than_or_equal_to || null,
+              oncePerCustomer: rule.once_per_customer || false,
+              createdAt: c.created_at || rule.created_at
+            });
+          }
+        } catch (e) {
+          console.log(`[Coupons] Error fetching codes for rule ${rule.id}: ${e.message}`);
+        }
+      }
+
+      // Check for pagination (Link header)
+      const linkHeader = priceRulesResponse.headers?.link;
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        if (match) {
+          priceRulesUrl = match[1];
+        } else {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+  } catch (e) {
+    console.error('[Coupons] Error fetching coupons:', e.message);
+  }
+
+  return allCoupons;
+}
+
+// Helper function to get discount status
+function getDiscountStatus(rule) {
+  const now = new Date();
+
+  if (rule.starts_at && new Date(rule.starts_at) > now) {
+    return 'scheduled'; // מתוזמן
+  }
+  if (rule.ends_at && new Date(rule.ends_at) < now) {
+    return 'expired'; // פג תוקף
+  }
+  return 'active'; // פעיל
+}
+
 // GET /api/shopify/discounts/search - Search for specific coupon code
 router.get('/discounts/search', async (req, res) => {
   const startTime = Date.now();
@@ -667,109 +768,84 @@ router.get('/discounts/search', async (req, res) => {
       });
     }
 
-    const searchCode = code.trim().toUpperCase();
-    console.log(`[Coupon Search] Searching for: "${searchCode}"`);
+    const searchTerm = code.trim().toUpperCase();
+    console.log(`[Coupon Search] Searching for: "${searchTerm}"`);
 
     const { baseUrl, headers } = shopifyService.getConfig();
 
     if (!baseUrl || !headers) {
-      console.error('[Coupon Search] Missing Shopify config');
       return res.status(500).json({ success: false, message: 'Shopify לא מוגדר' });
     }
 
-    // Fetch price rules
-    const priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
-    console.log(`[Coupon Search] Fetching price rules...`);
+    // Fetch ALL discount codes
+    const allCoupons = await fetchAllDiscountCodes(baseUrl, headers);
+    console.log(`[Coupon Search] Total coupons found: ${allCoupons.length}`);
 
-    let priceRulesResponse;
-    try {
-      priceRulesResponse = await axios.get(priceRulesUrl, {
-        headers,
-        timeout: 30000
-      });
-    } catch (e) {
-      console.error('[Coupon Search] Error fetching price rules:', e.message);
-      return res.json({ success: false, message: 'שגיאה בחיבור ל-Shopify: ' + e.message });
-    }
-
-    const rules = priceRulesResponse.data.price_rules || [];
-    console.log(`[Coupon Search] Found ${rules.length} price rules`);
-
-    let foundCoupon = null;
-    let allCodes = []; // Collect all codes for debugging
-
-    // Search discount codes for each rule
-    for (let i = 0; i < rules.length; i++) {
-      const rule = rules[i];
-
-      // Add small delay every 5 rules to avoid rate limiting
-      if (i > 0 && i % 5 === 0) {
-        await new Promise(r => setTimeout(r, 300));
-      }
-
-      try {
-        const codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
-        const codesResponse = await axios.get(codesUrl, {
-          headers,
-          timeout: 15000
-        });
-
-        const codes = codesResponse.data.discount_codes || [];
-
-        // Log all codes for debugging
-        codes.forEach(c => {
-          allCodes.push(c.code);
-          console.log(`[Coupon Search] Found code: "${c.code}" (rule: ${rule.title || rule.id})`);
-        });
-
-        // Search for exact match or partial match
-        for (const c of codes) {
-          const codeUpper = c.code.toUpperCase();
-          if (codeUpper === searchCode || codeUpper.includes(searchCode) || searchCode.includes(codeUpper)) {
-            foundCoupon = {
-              id: c.id,
-              priceRuleId: rule.id,
-              code: c.code,
-              ruleTitle: rule.title,
-              value: rule.value,
-              valueType: rule.value_type,
-              targetType: rule.target_type,
-              usageCount: c.usage_count || 0,
-              usageLimit: rule.usage_limit,
-              startsAt: rule.starts_at,
-              endsAt: rule.ends_at,
-              isActive: isDiscountActive(rule),
-              minimumAmount: rule.prerequisite_subtotal_range?.greater_than_or_equal_to || null,
-              oncePerCustomer: rule.once_per_customer || false
-            };
-            console.log(`[Coupon Search] MATCH FOUND: "${c.code}" in rule "${rule.title}"`);
-            break;
-          }
-        }
-
-        if (foundCoupon) break;
-      } catch (e) {
-        console.log(`[Coupon Search] Skipped rule ${rule.id}: ${e.message}`);
-      }
-    }
+    // Search with partial matching
+    const matches = allCoupons.filter(c => {
+      const codeUpper = c.code.toUpperCase();
+      const titleUpper = (c.ruleTitle || '').toUpperCase();
+      return codeUpper.includes(searchTerm) ||
+             searchTerm.includes(codeUpper) ||
+             titleUpper.includes(searchTerm) ||
+             codeUpper === searchTerm;
+    });
 
     const elapsed = Date.now() - startTime;
-    console.log(`[Coupon Search] Completed in ${elapsed}ms. Total codes found: ${allCodes.length}`);
-    console.log(`[Coupon Search] All codes: ${allCodes.join(', ')}`);
+    console.log(`[Coupon Search] Found ${matches.length} matches in ${elapsed}ms`);
 
-    if (foundCoupon) {
-      res.json({ success: true, data: foundCoupon });
+    if (matches.length > 0) {
+      // Return the best match (exact match first, then first partial)
+      const exactMatch = matches.find(c => c.code.toUpperCase() === searchTerm);
+      const bestMatch = exactMatch || matches[0];
+
+      res.json({
+        success: true,
+        data: bestMatch,
+        allMatches: matches.length > 1 ? matches.slice(0, 5) : undefined
+      });
     } else {
+      // Show available coupons when not found
+      const availableCodes = allCoupons.map(c => c.code).slice(0, 15);
       res.json({
         success: false,
         message: `לא נמצא קופון "${code}"`,
-        hint: allCodes.length > 0 ? `קופונים קיימים: ${allCodes.slice(0, 10).join(', ')}${allCodes.length > 10 ? '...' : ''}` : 'לא נמצאו קופונים במערכת'
+        availableCoupons: availableCodes,
+        hint: availableCodes.length > 0
+          ? `קופונים קיימים: ${availableCodes.join(', ')}`
+          : 'לא נמצאו קופונים במערכת'
       });
     }
 
   } catch (error) {
     console.error('[Coupon Search] Error:', error.message);
     res.json({ success: false, message: 'שגיאה בחיפוש: ' + error.message });
+  }
+});
+
+// GET /api/shopify/discounts/all - Get ALL discount codes (for debugging/listing)
+router.get('/discounts/all', async (req, res) => {
+  try {
+    const { baseUrl, headers } = shopifyService.getConfig();
+
+    if (!baseUrl || !headers) {
+      return res.status(500).json({ success: false, message: 'Shopify לא מוגדר' });
+    }
+
+    const allCoupons = await fetchAllDiscountCodes(baseUrl, headers);
+
+    // Sort by creation date (newest first)
+    allCoupons.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({
+      success: true,
+      total: allCoupons.length,
+      data: allCoupons
+    });
+
+  } catch (error) {
+    console.error('[Discounts All] Error:', error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
