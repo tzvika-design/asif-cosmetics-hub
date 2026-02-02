@@ -15,7 +15,19 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(helmet());
+// Configure helmet to allow scripts from same origin
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"]
+    }
+  }
+}));
 app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
@@ -37,8 +49,13 @@ app.use('/api/chat', chatRoutes);
 app.use('/agents', agentRoutes);
 app.use('/webhooks', webhookRoutes);
 
-// Root endpoint
+// Root endpoint - serve dashboard
 app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// API info endpoint
+app.get('/api-info', (req, res) => {
   res.json({
     name: 'Asif Cosmetics Hub',
     version: '1.0.0',
