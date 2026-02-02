@@ -71,62 +71,191 @@ router.get('/analytics', async (req, res) => {
   }
 });
 
-// GET /api/shopify/discounts - Coupon codes and usage
+// GET /api/shopify/discounts - Coupon codes and usage (FIXED)
 router.get('/discounts', async (req, res) => {
   try {
     const { baseUrl, headers } = shopifyService.getConfig();
+    const axios = require('axios');
+    const allDiscounts = [];
 
-    // Get price rules (discount codes are attached to price rules)
-    const priceRulesResponse = await require('axios').get(
-      `${baseUrl}/price_rules.json`,
-      { headers }
-    );
+    console.log('=== FETCHING SHOPIFY DISCOUNTS ===');
 
-    const priceRules = priceRulesResponse.data.price_rules || [];
+    // 1. Fetch ALL price rules with pagination
+    let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
+    let allPriceRules = [];
 
-    // Get discount codes for each price rule
-    const discountsWithCodes = await Promise.all(
-      priceRules.map(async (rule) => {
+    while (priceRulesUrl) {
+      console.log('Fetching price rules:', priceRulesUrl);
+      const priceRulesResponse = await axios.get(priceRulesUrl, { headers });
+      const rules = priceRulesResponse.data.price_rules || [];
+      allPriceRules = allPriceRules.concat(rules);
+      console.log(`Got ${rules.length} price rules, total: ${allPriceRules.length}`);
+
+      // Check for pagination link
+      const linkHeader = priceRulesResponse.headers.link;
+      priceRulesUrl = null;
+      if (linkHeader) {
+        const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        if (nextMatch) priceRulesUrl = nextMatch[1];
+      }
+    }
+
+    console.log(`Total price rules found: ${allPriceRules.length}`);
+
+    // 2. Get discount codes for each price rule (with pagination)
+    for (const rule of allPriceRules) {
+      let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
+
+      while (codesUrl) {
         try {
-          const codesResponse = await require('axios').get(
-            `${baseUrl}/price_rules/${rule.id}/discount_codes.json`,
-            { headers }
-          );
-          return {
-            id: rule.id,
-            title: rule.title,
-            value: rule.value,
-            valueType: rule.value_type,
-            targetType: rule.target_type,
-            usageLimit: rule.usage_limit,
-            startsAt: rule.starts_at,
-            endsAt: rule.ends_at,
-            codes: codesResponse.data.discount_codes || []
-          };
+          const codesResponse = await axios.get(codesUrl, { headers });
+          const codes = codesResponse.data.discount_codes || [];
+
+          console.log(`Price rule "${rule.title}" (ID: ${rule.id}): ${codes.length} codes`);
+
+          // Add each discount code as a separate entry
+          for (const code of codes) {
+            console.log(`  - Code: "${code.code}", usage_count: ${code.usage_count}`);
+            allDiscounts.push({
+              id: code.id,
+              priceRuleId: rule.id,
+              code: code.code,
+              title: code.code, // Use code as title for display
+              value: rule.value,
+              valueType: rule.value_type,
+              targetType: rule.target_type,
+              usageCount: code.usage_count || 0,
+              usageLimit: rule.usage_limit,
+              startsAt: rule.starts_at,
+              endsAt: rule.ends_at,
+              source: 'price_rule'
+            });
+          }
+
+          // Check for pagination
+          const linkHeader = codesResponse.headers.link;
+          codesUrl = null;
+          if (linkHeader) {
+            const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+            if (nextMatch) codesUrl = nextMatch[1];
+          }
         } catch (e) {
-          return {
-            id: rule.id,
-            title: rule.title,
-            value: rule.value,
-            valueType: rule.value_type,
-            codes: []
-          };
+          console.log(`Error fetching codes for rule ${rule.id}:`, e.message);
+          codesUrl = null;
         }
-      })
-    );
+      }
+    }
 
-    // Calculate usage stats
-    const discountStats = discountsWithCodes.map(discount => ({
-      ...discount,
-      totalUsage: discount.codes.reduce((sum, code) => sum + (code.usage_count || 0), 0)
-    }));
+    // 3. Try to fetch automatic discounts (GraphQL API)
+    try {
+      console.log('Fetching automatic discounts via GraphQL...');
+      const graphqlUrl = baseUrl.replace('/admin/api/2024-01', '/admin/api/2024-01/graphql.json');
 
-    // Sort by usage
-    discountStats.sort((a, b) => b.totalUsage - a.totalUsage);
+      const graphqlQuery = {
+        query: `{
+          discountNodes(first: 100) {
+            edges {
+              node {
+                id
+                discount {
+                  ... on DiscountCodeBasic {
+                    title
+                    codes(first: 10) {
+                      edges {
+                        node {
+                          code
+                          usageCount: asyncUsageCount
+                        }
+                      }
+                    }
+                  }
+                  ... on DiscountCodeBxgy {
+                    title
+                    codes(first: 10) {
+                      edges {
+                        node {
+                          code
+                          usageCount: asyncUsageCount
+                        }
+                      }
+                    }
+                  }
+                  ... on DiscountCodeFreeShipping {
+                    title
+                    codes(first: 10) {
+                      edges {
+                        node {
+                          code
+                          usageCount: asyncUsageCount
+                        }
+                      }
+                    }
+                  }
+                  ... on DiscountAutomaticBasic {
+                    title
+                  }
+                  ... on DiscountAutomaticBxgy {
+                    title
+                  }
+                }
+              }
+            }
+          }
+        }`
+      };
+
+      const graphqlResponse = await axios.post(graphqlUrl, graphqlQuery, { headers });
+
+      if (graphqlResponse.data?.data?.discountNodes?.edges) {
+        const nodes = graphqlResponse.data.data.discountNodes.edges;
+        console.log(`GraphQL returned ${nodes.length} discount nodes`);
+
+        for (const edge of nodes) {
+          const node = edge.node;
+          const discount = node.discount;
+
+          if (discount?.codes?.edges) {
+            for (const codeEdge of discount.codes.edges) {
+              const codeData = codeEdge.node;
+              const existingCode = allDiscounts.find(d => d.code === codeData.code);
+
+              if (existingCode) {
+                // Update usage count if GraphQL has better data
+                if (codeData.usageCount && codeData.usageCount > existingCode.usageCount) {
+                  console.log(`Updating ${codeData.code} usage: ${existingCode.usageCount} -> ${codeData.usageCount}`);
+                  existingCode.usageCount = codeData.usageCount;
+                }
+              } else {
+                console.log(`GraphQL found new code: ${codeData.code}, usage: ${codeData.usageCount}`);
+                allDiscounts.push({
+                  id: node.id,
+                  code: codeData.code,
+                  title: codeData.code,
+                  usageCount: codeData.usageCount || 0,
+                  source: 'graphql'
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (graphqlError) {
+      console.log('GraphQL fetch failed (optional):', graphqlError.message);
+    }
+
+    // Sort by usage count (highest first)
+    allDiscounts.sort((a, b) => b.usageCount - a.usageCount);
+
+    console.log(`=== TOTAL DISCOUNTS: ${allDiscounts.length} ===`);
+    console.log('Top 5 by usage:');
+    allDiscounts.slice(0, 5).forEach(d => {
+      console.log(`  ${d.code}: ${d.usageCount} uses`);
+    });
 
     res.json({
       success: true,
-      data: discountStats
+      data: allDiscounts,
+      total: allDiscounts.length
     });
 
   } catch (error) {

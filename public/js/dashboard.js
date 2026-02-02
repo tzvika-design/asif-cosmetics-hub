@@ -651,7 +651,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function isTracked(couponId) {
-    return trackedCoupons.some(c => c.id === couponId);
+    return trackedCoupons.some(c => c.id === couponId || c.id == couponId);
   }
 
   function toggleTrackCoupon(coupon) {
@@ -660,10 +660,10 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
       trackedCoupons.push({
         id: coupon.id,
-        title: coupon.title,
+        code: coupon.code || coupon.title,
         value: coupon.value,
         valueType: coupon.valueType,
-        totalUsage: coupon.totalUsage || 0
+        usageCount: coupon.usageCount || 0
       });
     }
     saveTrackedCoupons();
@@ -672,7 +672,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function removeTrackedCoupon(couponId) {
-    trackedCoupons = trackedCoupons.filter(c => c.id !== couponId);
+    trackedCoupons = trackedCoupons.filter(c => c.id != couponId);
     saveTrackedCoupons();
     renderTrackedCoupons();
     renderCouponsList(document.getElementById('couponSearch')?.value || '');
@@ -684,8 +684,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Update tracked coupons with latest data from allCoupons
     trackedCoupons = trackedCoupons.map(tc => {
-      const latest = allCoupons.find(c => c.id === tc.id);
-      return latest ? { ...tc, totalUsage: latest.totalUsage || 0 } : tc;
+      const latest = allCoupons.find(c => c.id === tc.id || c.code === tc.code);
+      return latest ? { ...tc, usageCount: latest.usageCount || 0 } : tc;
     });
     saveTrackedCoupons();
 
@@ -700,9 +700,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <tbody>
           ${trackedCoupons.map(c => `
             <tr>
-              <td><strong>⭐ ${c.title}</strong></td>
-              <td>${c.valueType === 'percentage' ? c.value + '%' : '₪' + Math.abs(c.value)}</td>
-              <td>${c.totalUsage}</td>
+              <td><strong>⭐ ${c.code || c.title}</strong></td>
+              <td>${formatDiscount(c.value, c.valueType)}</td>
+              <td>${c.usageCount || 0}</td>
               <td>
                 <button class="btn-remove-coupon" data-id="${c.id}" title="הסר ממעקב"
                   style="background: none; border: none; color: var(--error); cursor: pointer; font-size: 1.2rem;">
@@ -717,8 +717,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Add remove button handlers
     container.querySelectorAll('.btn-remove-coupon').forEach(btn => {
-      btn.onclick = () => removeTrackedCoupon(parseInt(btn.dataset.id));
+      btn.onclick = () => removeTrackedCoupon(btn.dataset.id);
     });
+  }
+
+  function formatDiscount(value, valueType) {
+    if (!value) return '-';
+    if (valueType === 'percentage') return value + '%';
+    return '₪' + Math.abs(parseFloat(value));
   }
 
   function renderCouponsList(searchTerm = '') {
@@ -728,7 +734,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let filtered = allCoupons;
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
-      filtered = allCoupons.filter(c => c.title.toLowerCase().includes(term));
+      filtered = allCoupons.filter(c => (c.code || c.title || '').toLowerCase().includes(term));
     }
 
     if (filtered.length === 0) {
@@ -748,9 +754,9 @@ document.addEventListener('DOMContentLoaded', function() {
                   ${isTracked(d.id) ? '⭐' : '☆'}
                 </button>
               </td>
-              <td><strong>${d.title}</strong></td>
-              <td>${d.valueType === 'percentage' ? d.value + '%' : '₪' + Math.abs(d.value)}</td>
-              <td>${d.totalUsage}</td>
+              <td><strong>${d.code || d.title}</strong></td>
+              <td>${formatDiscount(d.value, d.valueType)}</td>
+              <td>${d.usageCount || 0}</td>
             </tr>
           `).join('')}
         </tbody>
@@ -760,8 +766,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add track button handlers
     container.querySelectorAll('.btn-track-coupon').forEach(btn => {
       btn.onclick = () => {
-        const couponId = parseInt(btn.dataset.id);
-        const coupon = allCoupons.find(c => c.id === couponId);
+        const couponId = btn.dataset.id;
+        const coupon = allCoupons.find(c => c.id == couponId);
         if (coupon) toggleTrackCoupon(coupon);
       };
     });
@@ -775,11 +781,14 @@ document.addEventListener('DOMContentLoaded', function() {
     renderTrackedCoupons();
 
     try {
-      const response = await fetch(API_BASE + '/api/shopify/discounts?limit=50');
+      console.log('Fetching coupons from API...');
+      const response = await fetch(API_BASE + '/api/shopify/discounts');
       const data = await response.json();
+      console.log('Coupons API response:', data);
 
       if (data.success) {
-        allCoupons = data.data.slice(0, 50); // Limit to 50 coupons
+        allCoupons = data.data; // All coupons from API
+        console.log(`Loaded ${allCoupons.length} coupons`);
 
         if (allCoupons.length === 0) {
           container.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין קופונים פעילים</p>';
@@ -797,8 +806,12 @@ document.addEventListener('DOMContentLoaded', function() {
             renderCouponsList(this.value);
           };
         }
+      } else {
+        console.error('Coupons API error:', data.message);
+        container.innerHTML = `<p style="color: var(--error); text-align: center;">שגיאה: ${data.message}</p>`;
       }
     } catch (e) {
+      console.error('Coupons fetch error:', e);
       container.innerHTML = '<p style="color: var(--error); text-align: center;">שגיאה בטעינת קופונים</p>';
     }
   }
