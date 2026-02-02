@@ -1651,47 +1651,59 @@ router.get('/debug/last-month', async (req, res) => {
 
 /**
  * GET /api/shopify/debug/last-year
- * Debug: Check last year's data access
- * NOTE: Requires read_all_orders scope for orders > 60 days old
+ * Debug: Check 2025 orders - DIRECT API CALL
  */
 router.get('/debug/last-year', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ success: false, error: 'Missing Shopify credentials' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+
   try {
-    const now = new Date();
-    const startOfLastYear = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0, 0);
-    const endOfLastYear = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
-
-    // First check if we have read_all_orders access
-    const orderCount = await shopifyRest.getOrderCount(startOfLastYear, endOfLastYear);
-
-    const result = {
-      period: 'lastYear',
-      dateRange: {
-        start: startOfLastYear.toISOString(),
-        end: endOfLastYear.toISOString()
+    // Direct REST API call for 2025 orders
+    const response = await axios.get(`${baseUrl}/orders.json`, {
+      headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+      params: {
+        status: 'any',
+        created_at_min: '2025-01-01T00:00:00+02:00',
+        created_at_max: '2025-12-31T23:59:59+02:00',
+        limit: 250
       },
-      expectedOrderCount: orderCount,
-      note: orderCount === 0
-        ? 'WARNING: No orders found. This might mean your access token lacks read_all_orders scope (needed for orders > 60 days old)'
-        : `Found ${orderCount} orders for last year`
-    };
+      timeout: 30000
+    });
 
-    if (orderCount > 0) {
-      const orders = await shopifyRest.getOrders(startOfLastYear, endOfLastYear);
-      result.actualFetched = orders.length;
-      result.totalSales = Math.round(orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0));
-      result.sampleOrders = orders.slice(0, 3).map(o => ({
+    const orders = response.data.orders || [];
+    const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+
+    res.json({
+      success: true,
+      year: 2025,
+      orderCount: orders.length,
+      totalSales: Math.round(totalSales),
+      sampleOrders: orders.slice(0, 5).map(o => ({
+        id: o.id,
         name: o.name,
-        date: o.created_at,
-        total: o.total_price
-      }));
-    }
+        created_at: o.created_at,
+        total_price: o.total_price,
+        customer: o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : 'Guest'
+      })),
+      note: orders.length === 250 ? 'There may be more orders (pagination needed)' : `All ${orders.length} orders fetched`,
+      hasMorePages: !!response.headers.link?.includes('rel="next"')
+    });
 
-    res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({
+    res.json({
       success: false,
       error: error.message,
-      hint: 'If you get 0 orders for last year, check that your Shopify app has read_all_orders scope'
+      statusCode: error.response?.status,
+      responseData: error.response?.data,
+      hint: error.response?.status === 403
+        ? 'Access denied - check if read_all_orders scope is enabled and app is reinstalled'
+        : 'Check Railway logs for more details'
     });
   }
 });
