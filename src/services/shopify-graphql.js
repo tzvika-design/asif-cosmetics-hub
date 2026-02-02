@@ -79,18 +79,32 @@ class ShopifyGraphQL {
       this.initialize();
     }
 
-    const response = await axios.post(
-      this.baseUrl,
-      { query: queryString, variables },
-      { headers: this.headers, timeout: 60000 }
-    );
+    try {
+      console.log(`[ShopifyGraphQL] Executing query with variables:`, JSON.stringify(variables));
 
-    if (response.data.errors) {
-      console.error('[ShopifyGraphQL] Errors:', response.data.errors);
-      throw new Error(response.data.errors[0]?.message || 'GraphQL error');
+      const response = await axios.post(
+        this.baseUrl,
+        { query: queryString, variables },
+        { headers: this.headers, timeout: 60000 }
+      );
+
+      if (response.data.errors) {
+        console.error('[ShopifyGraphQL] GraphQL Errors:', JSON.stringify(response.data.errors));
+        throw new Error(response.data.errors[0]?.message || 'GraphQL error');
+      }
+
+      // Log success
+      const dataKeys = Object.keys(response.data.data || {});
+      console.log(`[ShopifyGraphQL] Query success. Response keys: ${dataKeys.join(', ')}`);
+
+      return response.data.data;
+    } catch (error) {
+      console.error(`[ShopifyGraphQL] Query failed:`, error.message);
+      if (error.response?.data) {
+        console.error(`[ShopifyGraphQL] Response:`, JSON.stringify(error.response.data));
+      }
+      throw error;
     }
-
-    return response.data.data;
   }
 
   /**
@@ -134,10 +148,10 @@ class ShopifyGraphQL {
     let hasNextPage = true;
     let pageCount = 0;
 
-    // GraphQL query for orders
+    // GraphQL query for orders - NO query parameter to avoid null issues
     const query = `
-      query getOrders($first: Int!, $after: String, $query: String) {
-        orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+      query getOrders($first: Int!, $after: String) {
+        orders(first: $first, after: $after, sortKey: CREATED_AT, reverse: true) {
           pageInfo {
             hasNextPage
             endCursor
@@ -207,11 +221,11 @@ class ShopifyGraphQL {
       console.log(`[ShopifyGraphQL] Fetching orders page ${pageCount}...`);
 
       try {
-        // Fetch WITHOUT date filter - filter in JavaScript instead
+        // Fetch ALL orders - filter in JavaScript instead
+        // Don't pass query variable at all to avoid null issues
         const data = await this.query(query, {
           first: 250,
-          after: cursor,
-          query: null  // No query filter - fetch all
+          after: cursor
         });
 
         console.log(`[ShopifyGraphQL] Page ${pageCount} returned ${data.orders?.nodes?.length || 0} orders`);

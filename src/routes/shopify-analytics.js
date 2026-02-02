@@ -1328,4 +1328,140 @@ router.get('/refresh-all', async (req, res) => {
   res.json(result);
 });
 
+/**
+ * GET /api/shopify/compare-apis
+ * Compare REST API vs GraphQL results side by side
+ */
+router.get('/compare-apis', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ success: false, error: 'Missing Shopify credentials' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+  const graphqlUrl = `${baseUrl}/graphql.json`;
+  const headers = { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN };
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    store: process.env.SHOPIFY_STORE_URL,
+    rest: {},
+    graphql: {},
+    comparison: {}
+  };
+
+  // Test 1: REST API - Get orders
+  try {
+    const restResponse = await axios.get(`${baseUrl}/orders.json?limit=10&status=any`, {
+      headers,
+      timeout: 15000
+    });
+    const restOrders = restResponse.data.orders || [];
+    result.rest = {
+      success: true,
+      count: restOrders.length,
+      orders: restOrders.map(o => ({
+        name: o.name,
+        created_at: o.created_at,
+        total_price: o.total_price
+      }))
+    };
+  } catch (e) {
+    result.rest = { success: false, error: e.message };
+  }
+
+  // Test 2: GraphQL - Get orders WITHOUT query filter
+  try {
+    const graphqlQuery = `
+      query {
+        orders(first: 10, sortKey: CREATED_AT, reverse: true) {
+          nodes {
+            name
+            createdAt
+            totalPriceSet { shopMoney { amount } }
+          }
+        }
+      }
+    `;
+    const gqlResponse = await axios.post(graphqlUrl, { query: graphqlQuery }, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+
+    if (gqlResponse.data.errors) {
+      result.graphql.noFilter = { success: false, errors: gqlResponse.data.errors };
+    } else {
+      const gqlOrders = gqlResponse.data.data?.orders?.nodes || [];
+      result.graphql.noFilter = {
+        success: true,
+        count: gqlOrders.length,
+        orders: gqlOrders.map(o => ({
+          name: o.name,
+          created_at: o.createdAt,
+          total_price: o.totalPriceSet?.shopMoney?.amount
+        }))
+      };
+    }
+  } catch (e) {
+    result.graphql.noFilter = { success: false, error: e.message };
+  }
+
+  // Test 3: GraphQL - Get orders WITH query:null (how our code does it)
+  try {
+    const graphqlQuery = `
+      query getOrders($query: String) {
+        orders(first: 10, sortKey: CREATED_AT, reverse: true, query: $query) {
+          nodes {
+            name
+            createdAt
+            totalPriceSet { shopMoney { amount } }
+          }
+        }
+      }
+    `;
+    const gqlResponse = await axios.post(graphqlUrl, {
+      query: graphqlQuery,
+      variables: { query: null }
+    }, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
+
+    if (gqlResponse.data.errors) {
+      result.graphql.withNullQuery = { success: false, errors: gqlResponse.data.errors };
+    } else {
+      const gqlOrders = gqlResponse.data.data?.orders?.nodes || [];
+      result.graphql.withNullQuery = {
+        success: true,
+        count: gqlOrders.length,
+        orders: gqlOrders.map(o => ({
+          name: o.name,
+          created_at: o.createdAt,
+          total_price: o.totalPriceSet?.shopMoney?.amount
+        }))
+      };
+    }
+  } catch (e) {
+    result.graphql.withNullQuery = { success: false, error: e.message };
+  }
+
+  // Comparison summary
+  result.comparison = {
+    restWorks: result.rest.success && result.rest.count > 0,
+    graphqlNoFilterWorks: result.graphql.noFilter?.success && result.graphql.noFilter?.count > 0,
+    graphqlWithNullWorks: result.graphql.withNullQuery?.success && result.graphql.withNullQuery?.count > 0,
+    recommendation: ''
+  };
+
+  if (result.comparison.restWorks && !result.comparison.graphqlWithNullWorks) {
+    result.comparison.recommendation = 'BUG CONFIRMED: REST works but GraphQL with null query fails. Switch to REST API.';
+  } else if (result.comparison.graphqlNoFilterWorks && !result.comparison.graphqlWithNullWorks) {
+    result.comparison.recommendation = 'BUG: GraphQL works without query param but fails with query:null. Remove the query variable.';
+  }
+
+  res.json(result);
+});
+
 module.exports = router;
