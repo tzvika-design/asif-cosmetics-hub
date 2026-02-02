@@ -14,6 +14,10 @@ const shopifyAuthRoutes = require('./routes/shopify-auth');
 const shopifyAnalyticsRoutes = require('./routes/shopify-analytics');
 const metaRoutes = require('./routes/meta');
 
+// Import services
+const statsPreloader = require('./services/stats-preloader');
+const { cache } = require('./services/cache');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -42,7 +46,9 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'asif-cosmetics-hub',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    preloader: statsPreloader.getStatus(),
+    cache: cache.getStats()
   });
 });
 
@@ -90,7 +96,7 @@ app.use((req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`
   ========================================
     Asif Cosmetics Hub - Running!
@@ -104,6 +110,26 @@ app.listen(PORT, () => {
     - Agents: http://localhost:${PORT}/agents
   ========================================
   `);
+
+  // Pre-load stats in background (don't block server start)
+  if (process.env.SHOPIFY_STORE_URL && process.env.SHOPIFY_ACCESS_TOKEN) {
+    console.log('[Server] Starting stats preloader...');
+    statsPreloader.initialize().then(status => {
+      console.log('[Server] Stats preloader ready:', status);
+    }).catch(err => {
+      console.error('[Server] Stats preloader error:', err.message);
+    });
+  } else {
+    console.log('[Server] Shopify not configured - skipping preloader');
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('[Server] SIGTERM received, shutting down...');
+  statsPreloader.stopAutoRefresh();
+  cache.destroy();
+  process.exit(0);
 });
 
 module.exports = app;
