@@ -74,10 +74,10 @@ async function rateLimitedRequest(requestFn, retries = 2) {
   }
 }
 
-// Axios config with timeout
-const axiosConfig = (headers) => ({
+// Axios config with timeout (increased for large requests)
+const axiosConfig = (headers, timeout = 30000) => ({
   headers,
-  timeout: 15000
+  timeout
 });
 
 // Helper: Format date as DD/MM/YYYY (Israeli format)
@@ -109,6 +109,12 @@ function getDateRange(startDate, endDate, period) {
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
     case '90days':
       return { start: new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000), end: now };
+    case 'lastMonth':
+      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { start: lastMonthStart, end: lastMonthEnd };
+    case 'year':
+      return { start: new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000), end: now };
     default:
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
   }
@@ -276,9 +282,11 @@ router.get('/analytics/sales-chart', async (req, res) => {
 // GET /api/shopify/analytics/top-products - Top products by sales
 router.get('/analytics/top-products', async (req, res) => {
   try {
-    const { limit = 10 } = req.query;
+    const { limit = 10, period, startDate, endDate, search } = req.query;
 
-    if (isCacheValid('topProducts')) {
+    // Skip cache if filtering
+    const useCache = !period && !startDate && !endDate && !search;
+    if (useCache && isCacheValid('topProducts')) {
       console.log('Returning cached top products');
       return res.json({ ...cache.topProducts.data, cached: true, cacheAge: getCacheAge('topProducts') });
     }
@@ -287,6 +295,15 @@ router.get('/analytics/top-products', async (req, res) => {
       shopifyService.getProducts({ limit: 250 }),
       shopifyService.getOrders({ status: 'any', limit: 250 })
     ]);
+
+    // Get date range
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
+
+    // Filter orders by date range
+    const filteredOrders = orders.filter(o => {
+      const orderDate = new Date(o.created_at);
+      return orderDate >= start && orderDate <= end;
+    });
 
     // Build product map for inventory lookup
     const productMap = {};
@@ -301,7 +318,7 @@ router.get('/analytics/top-products', async (req, res) => {
 
     // Count sales from line items
     const productSales = {};
-    orders.forEach(order => {
+    filteredOrders.forEach(order => {
       (order.line_items || []).forEach(item => {
         const productId = item.product_id;
         if (!productSales[productId]) {
@@ -319,23 +336,40 @@ router.get('/analytics/top-products', async (req, res) => {
       });
     });
 
-    // Sort and limit
-    const topProducts = Object.values(productSales)
+    // Convert to array and apply search filter
+    let topProducts = Object.values(productSales);
+
+    if (search) {
+      const searchLower = search.toLowerCase();
+      topProducts = topProducts.filter(p => p.title.toLowerCase().includes(searchLower));
+    }
+
+    // Sort by revenue and limit
+    const byRevenue = [...topProducts]
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, parseInt(limit))
-      .map(p => ({
-        ...p,
-        revenue: Math.round(p.revenue)
-      }));
+      .map(p => ({ ...p, revenue: Math.round(p.revenue) }));
+
+    // Sort by quantity
+    const byQuantity = [...topProducts]
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, parseInt(limit))
+      .map(p => ({ ...p, revenue: Math.round(p.revenue) }));
 
     const result = {
       success: true,
-      data: topProducts,
-      total: Object.keys(productSales).length
+      data: byRevenue,
+      byQuantity,
+      byRevenue,
+      total: topProducts.length,
+      period: { start: formatDateIL(start), end: formatDateIL(end) }
     };
 
-    cache.topProducts.data = result;
-    cache.topProducts.timestamp = Date.now();
+    // Only cache if no filters
+    if (useCache) {
+      cache.topProducts.data = result;
+      cache.topProducts.timestamp = Date.now();
+    }
 
     res.json(result);
 
@@ -351,18 +385,29 @@ router.get('/analytics/top-products', async (req, res) => {
 // GET /api/shopify/analytics/top-customers - Top customers by spend
 router.get('/analytics/top-customers', async (req, res) => {
   try {
-    const { limit = 20 } = req.query;
+    const { limit = 20, period, startDate, endDate, search } = req.query;
 
-    if (isCacheValid('topCustomers')) {
+    // Skip cache if filtering
+    const useCache = !period && !startDate && !endDate && !search;
+    if (useCache && isCacheValid('topCustomers')) {
       console.log('Returning cached top customers');
       return res.json({ ...cache.topCustomers.data, cached: true, cacheAge: getCacheAge('topCustomers') });
     }
 
     const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
 
+    // Get date range
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
+
+    // Filter orders by date range
+    const filteredOrders = orders.filter(o => {
+      const orderDate = new Date(o.created_at);
+      return orderDate >= start && orderDate <= end;
+    });
+
     // Aggregate by customer
     const customerStats = {};
-    orders.forEach(order => {
+    filteredOrders.forEach(order => {
       if (!order.customer?.id) return;
 
       const customerId = order.customer.id;
@@ -386,8 +431,19 @@ router.get('/analytics/top-customers', async (req, res) => {
       }
     });
 
+    // Convert to array and apply search filter
+    let customers = Object.values(customerStats);
+
+    if (search) {
+      const searchLower = search.toLowerCase();
+      customers = customers.filter(c =>
+        c.name.toLowerCase().includes(searchLower) ||
+        c.email.toLowerCase().includes(searchLower)
+      );
+    }
+
     // Sort by total spend
-    const topCustomers = Object.values(customerStats)
+    const topCustomers = customers
       .sort((a, b) => b.totalSpend - a.totalSpend)
       .slice(0, parseInt(limit))
       .map(c => ({
@@ -398,20 +454,24 @@ router.get('/analytics/top-customers', async (req, res) => {
       }));
 
     // Calculate LTV average
-    const totalLTV = topCustomers.reduce((sum, c) => sum + c.totalSpend, 0);
-    const avgLTV = topCustomers.length > 0 ? Math.round(totalLTV / topCustomers.length) : 0;
+    const totalLTV = customers.reduce((sum, c) => sum + c.totalSpend, 0);
+    const avgLTV = customers.length > 0 ? Math.round(totalLTV / customers.length) : 0;
 
     const result = {
       success: true,
       data: topCustomers,
       stats: {
-        totalCustomers: Object.keys(customerStats).length,
+        totalCustomers: customers.length,
         avgLTV
-      }
+      },
+      period: { start: formatDateIL(start), end: formatDateIL(end) }
     };
 
-    cache.topCustomers.data = result;
-    cache.topCustomers.timestamp = Date.now();
+    // Only cache if no filters
+    if (useCache) {
+      cache.topCustomers.data = result;
+      cache.topCustomers.timestamp = Date.now();
+    }
 
     res.json(result);
 
@@ -615,7 +675,7 @@ router.get('/discounts', async (req, res) => {
 
     while (priceRulesUrl) {
       const priceRulesResponse = await rateLimitedRequest(() =>
-        axios.get(priceRulesUrl, axiosConfig(headers))
+        axios.get(priceRulesUrl, axiosConfig(headers, 60000))
       );
 
       const rules = priceRulesResponse.data.price_rules || [];
@@ -629,17 +689,18 @@ router.get('/discounts', async (req, res) => {
       }
     }
 
-    // Get discount codes for each price rule
-    for (let i = 0; i < allPriceRules.length; i++) {
-      const rule = allPriceRules[i];
+    // Get discount codes for each price rule (limit to first 20 rules to prevent timeout)
+    const rulesToProcess = allPriceRules.slice(0, 20);
+    for (let i = 0; i < rulesToProcess.length; i++) {
+      const rule = rulesToProcess[i];
       let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
 
-      if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
+      if (i > 0) await new Promise(resolve => setTimeout(resolve, 300));
 
       while (codesUrl) {
         try {
           const codesResponse = await rateLimitedRequest(() =>
-            axios.get(codesUrl, axiosConfig(headers))
+            axios.get(codesUrl, axiosConfig(headers, 60000))
           );
 
           const codes = codesResponse.data.discount_codes || [];

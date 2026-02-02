@@ -1125,16 +1125,17 @@
         </div>
 
         <!-- Time Period Selector -->
-        <div class="period-selector">
+        <div class="period-selector" id="analyticsPeriodSelector">
           <button class="period-btn" data-period="today">היום</button>
           <button class="period-btn" data-period="week">השבוע</button>
           <button class="period-btn active" data-period="month">החודש</button>
           <button class="period-btn" data-period="30days">30 יום</button>
+          <button class="period-btn" data-period="year">השנה</button>
           <span style="color: var(--text-muted); margin: 0 8px;">|</span>
-          <input type="date" class="date-input" id="startDate">
+          <input type="date" class="date-input" id="analyticsStartDate">
           <span style="color: var(--text-muted);">עד</span>
-          <input type="date" class="date-input" id="endDate">
-          <button class="period-btn" id="customDateBtn">הצג</button>
+          <input type="date" class="date-input" id="analyticsEndDate">
+          <button class="period-btn" id="analyticsCustomDateBtn">הצג</button>
         </div>
 
         <!-- Sales Chart -->
@@ -1224,11 +1225,30 @@
           </div>
         </div>
 
+        <!-- Period Selector & Search -->
+        <div class="period-selector" id="customersPeriodSelector">
+          <button class="period-btn" data-period="today">היום</button>
+          <button class="period-btn" data-period="week">השבוע</button>
+          <button class="period-btn active" data-period="month">החודש</button>
+          <button class="period-btn" data-period="lastMonth">חודש שעבר</button>
+          <button class="period-btn" data-period="year">השנה</button>
+          <span style="color: var(--text-muted); margin: 0 8px;">|</span>
+          <input type="date" class="date-input" id="customersStartDate">
+          <span style="color: var(--text-muted);">עד</span>
+          <input type="date" class="date-input" id="customersEndDate">
+          <button class="period-btn" id="customersCustomDateBtn">הצג</button>
+        </div>
+
+        <!-- Search Box -->
+        <div style="margin-bottom: 20px;">
+          <input type="text" id="customerSearch" class="form-input" placeholder="🔍 חפש לקוח לפי שם או אימייל..." style="max-width: 400px;">
+        </div>
+
         <!-- Top Customers Table -->
         <div class="panel">
           <div class="panel-header">
             <span class="panel-title">👑 לקוחות מובילים</span>
-            <span style="font-size: 0.8rem; color: var(--text-muted);">לפי סה"כ קניות</span>
+            <span id="customersCountLabel" style="font-size: 0.8rem; color: var(--text-muted);">לפי סה"כ קניות</span>
           </div>
           <div class="panel-content">
             <div class="data-table-wrapper">
@@ -1253,10 +1273,30 @@
 
       <!-- ==================== SHOPIFY PRODUCTS PAGE ==================== -->
       <div class="page" id="page-shopify-products">
+        <!-- Period Selector & Search -->
+        <div class="period-selector" id="productsPeriodSelector">
+          <button class="period-btn" data-period="today">היום</button>
+          <button class="period-btn" data-period="week">השבוע</button>
+          <button class="period-btn active" data-period="month">החודש</button>
+          <button class="period-btn" data-period="lastMonth">חודש שעבר</button>
+          <button class="period-btn" data-period="year">השנה</button>
+          <span style="color: var(--text-muted); margin: 0 8px;">|</span>
+          <input type="date" class="date-input" id="productsStartDate">
+          <span style="color: var(--text-muted);">עד</span>
+          <input type="date" class="date-input" id="productsEndDate">
+          <button class="period-btn" id="productsCustomDateBtn">הצג</button>
+        </div>
+
+        <!-- Search Box -->
+        <div style="margin-bottom: 20px;">
+          <input type="text" id="productSearch" class="form-input" placeholder="🔍 חפש מוצר לפי שם..." style="max-width: 400px;">
+        </div>
+
         <div class="two-columns">
           <div class="panel">
             <div class="panel-header">
               <span class="panel-title">🏆 מוצרים מובילים (לפי כמות)</span>
+              <span id="productsQuantityCount" style="font-size: 0.8rem; color: var(--text-muted);"></span>
             </div>
             <div class="panel-content" id="topProductsQuantity">
               <div class="loading">
@@ -1269,6 +1309,7 @@
           <div class="panel">
             <div class="panel-header">
               <span class="panel-title">💰 מוצרים מובילים (לפי הכנסה)</span>
+              <span id="productsRevenueCount" style="font-size: 0.8rem; color: var(--text-muted);"></span>
             </div>
             <div class="panel-content" id="topProductsRevenue">
               <div class="loading">

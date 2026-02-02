@@ -808,6 +808,56 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function setupPeriodSelector() {
+    // Period buttons for Analytics page
+    const analyticsSelector = document.getElementById('analyticsPeriodSelector');
+    if (analyticsSelector) {
+      analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
+        btn.onclick = function() {
+          analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+          const period = this.dataset.period;
+          loadKPICards(period);
+          loadSalesChart(period);
+        };
+      });
+    }
+
+    // Custom date button for Analytics
+    const analyticsCustomBtn = document.getElementById('analyticsCustomDateBtn');
+    if (analyticsCustomBtn) {
+      analyticsCustomBtn.onclick = function() {
+        const startDate = document.getElementById('analyticsStartDate').value;
+        const endDate = document.getElementById('analyticsEndDate').value;
+        if (startDate && endDate) {
+          if (analyticsSelector) {
+            analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          }
+          loadSalesChartWithDates(startDate, endDate);
+        }
+      };
+    }
+  }
+
+  async function loadSalesChartWithDates(startDate, endDate) {
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/sales-chart?startDate=' + startDate + '&endDate=' + endDate);
+      const data = await response.json();
+
+      if (data.success) {
+        renderChartJS(data.data);
+
+        const label = document.getElementById('chartPeriodLabel');
+        if (label && data.period) {
+          label.textContent = data.period.start + ' - ' + data.period.end;
+        }
+      }
+    } catch (e) {
+      console.error('Sales chart error:', e);
+    }
+  }
+
+  // Legacy function for backward compatibility
+  function setupPeriodSelectorLegacy() {
     // Period buttons
     document.querySelectorAll('.period-btn[data-period]').forEach(btn => {
       btn.onclick = function() {
@@ -837,11 +887,16 @@ document.addEventListener('DOMContentLoaded', function() {
   // CUSTOMERS PAGE
   // ==========================================
 
+  let customersPeriod = 'month';
+  let customersSearchTerm = '';
+
   async function loadCustomersPage() {
     await Promise.all([
       loadCustomerStats(),
-      loadTopCustomers()
+      loadTopCustomersFiltered()
     ]);
+    setupCustomersPeriodSelector();
+    setupCustomersSearch();
   }
 
   async function loadCustomerStats() {
@@ -863,13 +918,23 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  async function loadTopCustomers() {
+  async function loadTopCustomersFiltered(period = customersPeriod, search = customersSearchTerm) {
     const tbody = document.getElementById('topCustomersBody');
     if (!tbody) return;
 
+    tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
+
     try {
-      const response = await fetch(API_BASE + '/api/shopify/analytics/top-customers?limit=15');
+      let url = API_BASE + '/api/shopify/analytics/top-customers?limit=20&period=' + period;
+      if (search) url += '&search=' + encodeURIComponent(search);
+
+      const response = await fetch(url);
       const data = await response.json();
+
+      const countLabel = document.getElementById('customersCountLabel');
+      if (countLabel && data.stats) {
+        countLabel.textContent = `${data.stats.totalCustomers} לקוחות | ${data.period?.start || ''} - ${data.period?.end || ''}`;
+      }
 
       if (data.success && data.data.length > 0) {
         tbody.innerHTML = data.data.map((c, i) => `
@@ -886,7 +951,7 @@ document.addEventListener('DOMContentLoaded', function() {
           </tr>
         `).join('');
       } else {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין נתונים</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין נתונים לתקופה זו</td></tr>';
       }
     } catch (e) {
       console.error('Top customers error:', e);
@@ -894,25 +959,136 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  function setupCustomersPeriodSelector() {
+    const selector = document.getElementById('customersPeriodSelector');
+    if (!selector) return;
+
+    selector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
+      btn.onclick = function() {
+        selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        customersPeriod = this.dataset.period;
+        loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
+      };
+    });
+
+    const customBtn = document.getElementById('customersCustomDateBtn');
+    if (customBtn) {
+      customBtn.onclick = function() {
+        const startDate = document.getElementById('customersStartDate').value;
+        const endDate = document.getElementById('customersEndDate').value;
+        if (startDate && endDate) {
+          selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          loadTopCustomersWithDates(startDate, endDate, customersSearchTerm);
+        }
+      };
+    }
+  }
+
+  async function loadTopCustomersWithDates(startDate, endDate, search = '') {
+    const tbody = document.getElementById('topCustomersBody');
+    if (!tbody) return;
+
+    tbody.innerHTML = '<tr><td colspan="5" class="loading"><div class="spinner"></div></td></tr>';
+
+    try {
+      let url = API_BASE + '/api/shopify/analytics/top-customers?limit=20&startDate=' + startDate + '&endDate=' + endDate;
+      if (search) url += '&search=' + encodeURIComponent(search);
+
+      const response = await fetch(url);
+      const data = await response.json();
+
+      const countLabel = document.getElementById('customersCountLabel');
+      if (countLabel && data.stats) {
+        countLabel.textContent = `${data.stats.totalCustomers} לקוחות | ${data.period?.start || ''} - ${data.period?.end || ''}`;
+      }
+
+      if (data.success && data.data.length > 0) {
+        tbody.innerHTML = data.data.map((c, i) => `
+          <tr>
+            <td>
+              <span style="color: ${i < 3 ? 'var(--accent)' : 'var(--text)'}; font-weight: ${i < 3 ? '600' : '400'}">
+                ${i < 3 ? '👑 ' : ''}${c.name}
+              </span>
+            </td>
+            <td style="font-size: 0.8rem; color: var(--text-muted)">${c.email || '-'}</td>
+            <td>${c.orderCount}</td>
+            <td><strong style="color: var(--accent)">₪${c.totalSpend.toLocaleString()}</strong></td>
+            <td style="font-size: 0.85rem">${c.lastOrderDate}</td>
+          </tr>
+        `).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">אין נתונים לתקופה זו</td></tr>';
+      }
+    } catch (e) {
+      console.error('Top customers error:', e);
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--error);">שגיאה בטעינה</td></tr>';
+    }
+  }
+
+  function setupCustomersSearch() {
+    const searchInput = document.getElementById('customerSearch');
+    if (!searchInput) return;
+
+    let debounceTimer;
+    searchInput.oninput = function() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        customersSearchTerm = this.value;
+        loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
+      }, 300);
+    };
+  }
+
+  // Legacy function
+  async function loadTopCustomers() {
+    loadTopCustomersFiltered();
+  }
+
   // ==========================================
   // TOP PRODUCTS
   // ==========================================
 
+  let productsPeriod = 'month';
+  let productsSearchTerm = '';
+
   async function loadTopProducts() {
+    await loadTopProductsFiltered();
+    setupProductsPeriodSelector();
+    setupProductsSearch();
+    loadLowStockProducts();
+  }
+
+  async function loadTopProductsFiltered(period = productsPeriod, search = productsSearchTerm) {
+    const qtyContainer = document.getElementById('topProductsQuantity');
+    const revContainer = document.getElementById('topProductsRevenue');
+
+    if (qtyContainer) qtyContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    if (revContainer) revContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
     try {
-      const response = await fetch(API_BASE + '/api/shopify/top-products');
+      let url = API_BASE + '/api/shopify/analytics/top-products?limit=10&period=' + period;
+      if (search) url += '&search=' + encodeURIComponent(search);
+
+      const response = await fetch(url);
       const data = await response.json();
 
+      // Update counts
+      const qtyCount = document.getElementById('productsQuantityCount');
+      const revCount = document.getElementById('productsRevenueCount');
+      if (qtyCount && data.period) qtyCount.textContent = data.period.start + ' - ' + data.period.end;
+      if (revCount && data.period) revCount.textContent = data.period.start + ' - ' + data.period.end;
+
       if (data.success) {
-        const { bestByQuantity, bestByRevenue, lowStock } = data.data;
+        const byQuantity = data.byQuantity || [];
+        const byRevenue = data.byRevenue || data.data || [];
 
         // Render quantity list
-        const qtyContainer = document.getElementById('topProductsQuantity');
         if (qtyContainer) {
-          if (bestByQuantity.length === 0) {
-            qtyContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים</p>';
+          if (byQuantity.length === 0) {
+            qtyContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים לתקופה זו</p>';
           } else {
-            qtyContainer.innerHTML = bestByQuantity.map((p, i) => `
+            qtyContainer.innerHTML = byQuantity.map((p, i) => `
               <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border);">
                 <span>${i + 1}. ${p.title}</span>
                 <span style="color: var(--accent); font-weight: 600;">${p.quantity} נמכרו</span>
@@ -922,46 +1098,153 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Render revenue list
-        const revContainer = document.getElementById('topProductsRevenue');
         if (revContainer) {
-          if (bestByRevenue.length === 0) {
-            revContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים</p>';
+          if (byRevenue.length === 0) {
+            revContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים לתקופה זו</p>';
           } else {
-            revContainer.innerHTML = bestByRevenue.map((p, i) => `
+            revContainer.innerHTML = byRevenue.map((p, i) => `
               <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border);">
                 <span>${i + 1}. ${p.title}</span>
-                <span style="color: var(--accent); font-weight: 600;">₪${p.revenue.toFixed(0)}</span>
+                <span style="color: var(--accent); font-weight: 600;">₪${p.revenue.toLocaleString()}</span>
+              </div>
+            `).join('');
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Top products error:', e);
+      if (qtyContainer) qtyContainer.innerHTML = '<p style="color: var(--error); text-align: center;">שגיאה בטעינה</p>';
+      if (revContainer) revContainer.innerHTML = '<p style="color: var(--error); text-align: center;">שגיאה בטעינה</p>';
+    }
+  }
+
+  async function loadLowStockProducts() {
+    const stockContainer = document.getElementById('lowStockProducts');
+    if (!stockContainer) return;
+
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/top-products');
+      const data = await response.json();
+
+      if (data.success) {
+        const lowStock = data.data.lowStock || [];
+
+        if (lowStock.length === 0) {
+          stockContainer.innerHTML = '<p style="color: var(--success); text-align: center;">✓ כל המוצרים במלאי תקין</p>';
+        } else {
+          stockContainer.innerHTML = `
+            <table class="data-table">
+              <thead><tr><th>מוצר</th><th>מלאי</th><th>מחיר</th></tr></thead>
+              <tbody>
+                ${lowStock.map(p => `
+                  <tr>
+                    <td>${p.title}</td>
+                    <td style="color: ${p.inventory === 0 ? 'var(--error)' : 'var(--warn)'}; font-weight: 600;">${p.inventory}</td>
+                    <td>₪${p.price}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+        }
+      }
+    } catch (e) {
+      console.error('Low stock error:', e);
+    }
+  }
+
+  function setupProductsPeriodSelector() {
+    const selector = document.getElementById('productsPeriodSelector');
+    if (!selector) return;
+
+    selector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
+      btn.onclick = function() {
+        selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        productsPeriod = this.dataset.period;
+        loadTopProductsFiltered(productsPeriod, productsSearchTerm);
+      };
+    });
+
+    const customBtn = document.getElementById('productsCustomDateBtn');
+    if (customBtn) {
+      customBtn.onclick = function() {
+        const startDate = document.getElementById('productsStartDate').value;
+        const endDate = document.getElementById('productsEndDate').value;
+        if (startDate && endDate) {
+          selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          loadTopProductsWithDates(startDate, endDate, productsSearchTerm);
+        }
+      };
+    }
+  }
+
+  async function loadTopProductsWithDates(startDate, endDate, search = '') {
+    const qtyContainer = document.getElementById('topProductsQuantity');
+    const revContainer = document.getElementById('topProductsRevenue');
+
+    if (qtyContainer) qtyContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    if (revContainer) revContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+    try {
+      let url = API_BASE + '/api/shopify/analytics/top-products?limit=10&startDate=' + startDate + '&endDate=' + endDate;
+      if (search) url += '&search=' + encodeURIComponent(search);
+
+      const response = await fetch(url);
+      const data = await response.json();
+
+      const qtyCount = document.getElementById('productsQuantityCount');
+      const revCount = document.getElementById('productsRevenueCount');
+      if (qtyCount && data.period) qtyCount.textContent = data.period.start + ' - ' + data.period.end;
+      if (revCount && data.period) revCount.textContent = data.period.start + ' - ' + data.period.end;
+
+      if (data.success) {
+        const byQuantity = data.byQuantity || [];
+        const byRevenue = data.byRevenue || data.data || [];
+
+        if (qtyContainer) {
+          if (byQuantity.length === 0) {
+            qtyContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים לתקופה זו</p>';
+          } else {
+            qtyContainer.innerHTML = byQuantity.map((p, i) => `
+              <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                <span>${i + 1}. ${p.title}</span>
+                <span style="color: var(--accent); font-weight: 600;">${p.quantity} נמכרו</span>
               </div>
             `).join('');
           }
         }
 
-        // Render low stock
-        const stockContainer = document.getElementById('lowStockProducts');
-        if (stockContainer) {
-          if (lowStock.length === 0) {
-            stockContainer.innerHTML = '<p style="color: var(--success); text-align: center;">✓ כל המוצרים במלאי תקין</p>';
+        if (revContainer) {
+          if (byRevenue.length === 0) {
+            revContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center;">אין נתונים לתקופה זו</p>';
           } else {
-            stockContainer.innerHTML = `
-              <table class="data-table">
-                <thead><tr><th>מוצר</th><th>מלאי</th><th>מחיר</th></tr></thead>
-                <tbody>
-                  ${lowStock.map(p => `
-                    <tr>
-                      <td>${p.title}</td>
-                      <td style="color: ${p.inventory === 0 ? 'var(--error)' : 'var(--warn)'}; font-weight: 600;">${p.inventory}</td>
-                      <td>₪${p.price}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            `;
+            revContainer.innerHTML = byRevenue.map((p, i) => `
+              <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                <span>${i + 1}. ${p.title}</span>
+                <span style="color: var(--accent); font-weight: 600;">₪${p.revenue.toLocaleString()}</span>
+              </div>
+            `).join('');
           }
         }
       }
     } catch (e) {
       console.error('Top products error:', e);
     }
+  }
+
+  function setupProductsSearch() {
+    const searchInput = document.getElementById('productSearch');
+    if (!searchInput) return;
+
+    let debounceTimer;
+    searchInput.oninput = function() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        productsSearchTerm = this.value;
+        loadTopProductsFiltered(productsPeriod, productsSearchTerm);
+      }, 300);
+    };
   }
 
   // ==========================================
