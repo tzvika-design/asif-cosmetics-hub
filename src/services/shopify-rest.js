@@ -86,12 +86,22 @@ class ShopifyREST {
   }
 
   /**
-   * Check if order is from a valid sales channel (not imported via Matrixify)
+   * Check if order is from a valid sales channel
+   * - Matrixify orders from Jan-Feb 2025 are INCLUDED (real WordPress sales before Shopify launch)
+   * - Matrixify orders from March 2025+ are EXCLUDED (Shopify was live)
    */
   isValidSalesOrder(order) {
     const source = (order.source_name || '').toLowerCase();
-    // Only exclude Matrixify imports - everything else is valid
-    if (source.includes('matrixify')) return false;
+
+    // If it's a Matrixify import, only include if from Jan-Feb 2025
+    if (source.includes('matrixify')) {
+      const orderDate = new Date(order.created_at);
+      const marchFirst2025 = new Date('2025-03-01T00:00:00Z');
+      // Include Matrixify orders BEFORE March 2025 (WordPress era)
+      return orderDate < marchFirst2025;
+    }
+
+    // All other sources are valid
     return true;
   }
 

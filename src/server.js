@@ -210,11 +210,16 @@ app.get('/api/shopify/2025', async (req, res) => {
       if (nextUrl) await new Promise(r => setTimeout(r, 100));
     }
 
-    // ONLY exclude Matrixify - nothing else
+    // Matrixify orders from Jan-Feb 2025 = WordPress sales (INCLUDE)
+    // Matrixify orders from March 2025+ = duplicates (EXCLUDE)
+    const marchFirst2025 = new Date('2025-03-01T00:00:00Z');
     const isValidSalesOrder = (order) => {
       const source = (order.source_name || '').toLowerCase();
-      // Only exclude Matrixify imports
-      if (source.includes('matrixify')) return false;
+      if (source.includes('matrixify')) {
+        const orderDate = new Date(order.created_at);
+        // Include Matrixify only if BEFORE March 2025 (WordPress era)
+        return orderDate < marchFirst2025;
+      }
       return true;
     };
 
