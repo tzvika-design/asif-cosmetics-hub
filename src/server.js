@@ -175,7 +175,7 @@ app.get('/api/shopify/2025', async (req, res) => {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   if (!token) return res.json({ error: 'No token' });
 
-  const maxPages = parseInt(req.query.pages) || 50; // More pages to get full data
+  const maxPages = parseInt(req.query.pages) || 100; // Fetch ALL pages
   const showAll = req.query.all === 'true';
   const allOrders = [];
   let page = 0;
@@ -217,6 +217,24 @@ app.get('/api/shopify/2025', async (req, res) => {
     const netSales = validOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
     const totalDiscounts = validOrders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
 
+    // Analyze order dates to check for date range issues
+    const orderDates = validOrders.map(o => new Date(o.created_at));
+    const firstDate = orderDates.length ? new Date(Math.min(...orderDates)) : null;
+    const lastDate = orderDates.length ? new Date(Math.max(...orderDates)) : null;
+
+    // Count by financial status
+    const statusCounts = {};
+    validOrders.forEach(o => {
+      statusCounts[o.financial_status] = (statusCounts[o.financial_status] || 0) + 1;
+    });
+
+    // Count by source/channel
+    const sourceCounts = {};
+    validOrders.forEach(o => {
+      const source = o.source_name || 'unknown';
+      sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+    });
+
     res.json({
       success: true,
       mode: showAll ? 'ALL orders (including cancelled/refunded)' : 'PAID orders only (matches Shopify Admin)',
@@ -227,11 +245,23 @@ app.get('/api/shopify/2025', async (req, res) => {
       netSales: Math.round(netSales),
       totalDiscounts: Math.round(totalDiscounts),
       hasMore: !!nextUrl,
+      dateRange: {
+        first: firstDate?.toISOString(),
+        last: lastDate?.toISOString()
+      },
+      byFinancialStatus: statusCounts,
+      bySource: sourceCounts,
+      shopifyAdminExpected: {
+        orders: 8043,
+        grossSales: 2873833
+      },
       note: showAll ? 'Add ?all=false to see paid orders only' : 'Add ?all=true to see all orders including cancelled',
-      sample: validOrders.slice(0, 3).map(o => ({
+      sample: validOrders.slice(0, 5).map(o => ({
         name: o.name,
+        created_at: o.created_at,
         total: o.total_price,
         financial_status: o.financial_status,
+        source: o.source_name,
         cancelled: !!o.cancelled_at
       }))
     });
@@ -249,6 +279,44 @@ app.get('/api/shopify/clear-cache', async (req, res) => {
     message: 'All Shopify cache cleared. Data will be refreshed on next request.',
     timestamp: new Date().toISOString()
   });
+});
+
+// Get official order counts from Shopify
+app.get('/api/shopify/order-counts', async (req, res) => {
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!token) return res.json({ error: 'No token' });
+
+  const baseUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders/count.json';
+  const dateFilter = 'created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z';
+
+  try {
+    // Get counts with different filters
+    const [allCount, paidCount, pendingCount, refundedCount, cancelledCount] = await Promise.all([
+      axios.get(`${baseUrl}?status=any&${dateFilter}`, { headers: { 'X-Shopify-Access-Token': token } }),
+      axios.get(`${baseUrl}?status=any&financial_status=paid&${dateFilter}`, { headers: { 'X-Shopify-Access-Token': token } }),
+      axios.get(`${baseUrl}?status=any&financial_status=pending&${dateFilter}`, { headers: { 'X-Shopify-Access-Token': token } }),
+      axios.get(`${baseUrl}?status=any&financial_status=refunded&${dateFilter}`, { headers: { 'X-Shopify-Access-Token': token } }),
+      axios.get(`${baseUrl}?status=cancelled&${dateFilter}`, { headers: { 'X-Shopify-Access-Token': token } })
+    ]);
+
+    res.json({
+      year: 2025,
+      counts: {
+        all: allCount.data.count,
+        paid: paidCount.data.count,
+        pending: pendingCount.data.count,
+        refunded: refundedCount.data.count,
+        cancelled: cancelledCount.data.count
+      },
+      shopifyAdminExpected: 8043,
+      analysis: {
+        paidMinusCancelled: paidCount.data.count - cancelledCount.data.count,
+        allMinusCancelledMinusRefunded: allCount.data.count - cancelledCount.data.count - refundedCount.data.count
+      }
+    });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
 });
 
 // Compare paid vs all orders (diagnostic)
