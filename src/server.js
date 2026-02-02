@@ -147,78 +147,192 @@ app.get('/api/shopify/callback', async (req, res) => {
 });
 
 // ==========================================
-// SIMPLE 2025 DATA ENDPOINT - NO SERVICES, DIRECT API CALL
+// SIMPLE DATA ENDPOINTS - DIRECT API CALLS
 // ==========================================
-app.get('/api/shopify/2025', async (req, res) => {
-  const shop = process.env.SHOPIFY_STORE_URL || 'asif-cosmetics.myshopify.com';
+
+// Quick test - just 1 page
+app.get('/api/shopify/quick', async (req, res) => {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
-
-  if (!token) {
-    return res.json({ error: 'No SHOPIFY_ACCESS_TOKEN set' });
-  }
-
-  const allOrders = [];
-  let page = 0;
-  let nextUrl = `https://${shop}/admin/api/2024-01/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z`;
-
-  console.log('[2025] Starting fetch...');
+  if (!token) return res.json({ error: 'No token' });
 
   try {
-    while (nextUrl && page < 100) {
+    const r = await axios.get('https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&limit=5', {
+      headers: { 'X-Shopify-Access-Token': token }
+    });
+    res.json({
+      success: true,
+      count: r.data.orders?.length,
+      orders: r.data.orders?.map(o => ({ name: o.name, total: o.total_price, date: o.created_at }))
+    });
+  } catch (e) {
+    res.json({ error: e.message, status: e.response?.status });
+  }
+});
+
+// 2025 data - PAID ONLY to match Shopify Admin
+// Use ?all=true to see all orders including cancelled/refunded
+app.get('/api/shopify/2025', async (req, res) => {
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!token) return res.json({ error: 'No token' });
+
+  const maxPages = parseInt(req.query.pages) || 50; // More pages to get full data
+  const showAll = req.query.all === 'true';
+  const allOrders = [];
+  let page = 0;
+
+  // Use financial_status=paid to match Shopify Admin's sales reports
+  const financialFilter = showAll ? '' : '&financial_status=paid';
+  let nextUrl = `https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any${financialFilter}&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z`;
+
+  try {
+    while (nextUrl && page < maxPages) {
       page++;
-      const response = await axios.get(nextUrl, {
+      const r = await axios.get(nextUrl, {
         headers: { 'X-Shopify-Access-Token': token },
-        timeout: 30000
+        timeout: 15000
       });
-
-      const orders = response.data.orders || [];
+      const orders = r.data.orders || [];
       allOrders.push(...orders);
-      console.log(`[2025] Page ${page}: ${orders.length} orders, total: ${allOrders.length}`);
 
-      // Get next page
-      const link = response.headers.link;
+      if (page % 10 === 0) {
+        console.log(`[2025 Endpoint] Page ${page}: ${allOrders.length} orders...`);
+      }
+
+      const link = r.headers.link;
       if (link && link.includes('rel="next"')) {
-        const match = link.match(/<([^>]+)>;\s*rel="next"/);
-        nextUrl = match ? match[1] : null;
+        const m = link.match(/<([^>]+)>;\s*rel="next"/);
+        nextUrl = m ? m[1] : null;
       } else {
         nextUrl = null;
       }
 
+      // Small delay to avoid rate limits
       if (nextUrl) await new Promise(r => setTimeout(r, 100));
     }
 
-    const total = allOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+    // Filter out cancelled orders
+    const validOrders = showAll ? allOrders : allOrders.filter(o => !o.cancelled_at && o.financial_status !== 'voided');
 
-    // Monthly breakdown
-    const months = {};
-    allOrders.forEach(o => {
-      const m = o.created_at?.substring(0, 7) || 'unknown';
-      if (!months[m]) months[m] = { count: 0, sales: 0 };
-      months[m].count++;
-      months[m].sales += parseFloat(o.total_price || 0);
-    });
+    const grossSales = validOrders.reduce((s, o) => s + parseFloat(o.subtotal_price || 0) + parseFloat(o.total_discounts || 0), 0);
+    const netSales = validOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+    const totalDiscounts = validOrders.reduce((s, o) => s + parseFloat(o.total_discounts || 0), 0);
 
     res.json({
       success: true,
-      year: 2025,
-      totalOrders: allOrders.length,
-      totalSales: Math.round(total),
-      avgOrder: allOrders.length ? Math.round(total / allOrders.length) : 0,
+      mode: showAll ? 'ALL orders (including cancelled/refunded)' : 'PAID orders only (matches Shopify Admin)',
       pages: page,
-      monthly: Object.entries(months).sort().map(([m, d]) => ({
-        month: m,
-        orders: d.count,
-        sales: Math.round(d.sales)
+      ordersFetched: allOrders.length,
+      ordersValid: validOrders.length,
+      grossSales: Math.round(grossSales),
+      netSales: Math.round(netSales),
+      totalDiscounts: Math.round(totalDiscounts),
+      hasMore: !!nextUrl,
+      note: showAll ? 'Add ?all=false to see paid orders only' : 'Add ?all=true to see all orders including cancelled',
+      sample: validOrders.slice(0, 3).map(o => ({
+        name: o.name,
+        total: o.total_price,
+        financial_status: o.financial_status,
+        cancelled: !!o.cancelled_at
       }))
     });
+  } catch (e) {
+    res.json({ error: e.message, orders: allOrders.length, pages: page });
+  }
+});
 
-  } catch (err) {
-    console.error('[2025] Error:', err.message);
-    res.json({
-      error: err.message,
-      status: err.response?.status,
-      data: err.response?.data
-    });
+// Clear cache and refresh data
+app.get('/api/shopify/clear-cache', async (req, res) => {
+  cache.clearPattern('shopify');
+  console.log('[Server] Cache cleared');
+  res.json({
+    success: true,
+    message: 'All Shopify cache cleared. Data will be refreshed on next request.',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Compare paid vs all orders (diagnostic)
+app.get('/api/shopify/compare-2025', async (req, res) => {
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  if (!token) return res.json({ error: 'No token' });
+
+  const results = { paid: null, all: null };
+
+  try {
+    // Get PAID orders only (3 pages for quick test)
+    let paidOrders = [];
+    let paidUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&financial_status=paid&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z';
+    for (let i = 0; i < 35 && paidUrl; i++) {
+      const r = await axios.get(paidUrl, {
+        headers: { 'X-Shopify-Access-Token': token },
+        timeout: 15000
+      });
+      paidOrders.push(...(r.data.orders || []));
+      const link = r.headers.link;
+      if (link && link.includes('rel="next"')) {
+        const m = link.match(/<([^>]+)>;\s*rel="next"/);
+        paidUrl = m ? m[1] : null;
+      } else {
+        paidUrl = null;
+      }
+      if (paidUrl) await new Promise(r => setTimeout(r, 100));
+    }
+
+    // Filter out cancelled
+    paidOrders = paidOrders.filter(o => !o.cancelled_at);
+    const paidGross = paidOrders.reduce((s, o) => s + parseFloat(o.subtotal_price || 0) + parseFloat(o.total_discounts || 0), 0);
+    const paidNet = paidOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+
+    results.paid = {
+      orders: paidOrders.length,
+      grossSales: Math.round(paidGross),
+      netSales: Math.round(paidNet),
+      hasMore: !!paidUrl
+    };
+
+    // Get ALL orders (3 pages for quick test)
+    let allOrders = [];
+    let allUrl = 'https://asif-cosmetics.myshopify.com/admin/api/2024-01/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00Z&created_at_max=2025-12-31T23:59:59Z';
+    for (let i = 0; i < 35 && allUrl; i++) {
+      const r = await axios.get(allUrl, {
+        headers: { 'X-Shopify-Access-Token': token },
+        timeout: 15000
+      });
+      allOrders.push(...(r.data.orders || []));
+      const link = r.headers.link;
+      if (link && link.includes('rel="next"')) {
+        const m = link.match(/<([^>]+)>;\s*rel="next"/);
+        allUrl = m ? m[1] : null;
+      } else {
+        allUrl = null;
+      }
+      if (allUrl) await new Promise(r => setTimeout(r, 100));
+    }
+
+    const allGross = allOrders.reduce((s, o) => s + parseFloat(o.subtotal_price || 0) + parseFloat(o.total_discounts || 0), 0);
+    const allNet = allOrders.reduce((s, o) => s + parseFloat(o.total_price || 0), 0);
+
+    results.all = {
+      orders: allOrders.length,
+      grossSales: Math.round(allGross),
+      netSales: Math.round(allNet),
+      hasMore: !!allUrl
+    };
+
+    results.difference = {
+      extraOrders: results.all.orders - results.paid.orders,
+      extraGross: results.all.grossSales - results.paid.grossSales,
+      extraNet: results.all.netSales - results.paid.netSales
+    };
+
+    results.shopifyAdmin = {
+      expected: '8,043 orders, ₪2,873,832 gross sales',
+      note: 'PAID orders should match these numbers'
+    };
+
+    res.json(results);
+  } catch (e) {
+    res.json({ error: e.message, results });
   }
 });
 

@@ -89,16 +89,24 @@ class ShopifyREST {
    * Get orders within a date range - FETCHES ALL PAGES
    * @param {Date} startDate - Start of date range
    * @param {Date} endDate - End of date range
+   * @param {Object} options - Optional filters
+   * @param {boolean} options.paidOnly - Only include paid orders (default: true to match Shopify Admin)
+   * @param {boolean} options.excludeCancelled - Exclude cancelled orders (default: true)
    * @returns {Array} - Array of orders
    */
-  async getOrders(startDate, endDate) {
+  async getOrders(startDate, endDate, options = {}) {
     this.ensureInitialized();
+
+    // Default to paid only to match Shopify Admin reports
+    const paidOnly = options.paidOnly !== false;
+    const excludeCancelled = options.excludeCancelled !== false;
 
     const startStr = startDate.toISOString().split('T')[0];
     const endStr = endDate.toISOString().split('T')[0];
+    const filterKey = paidOnly ? '_paid' : '_all';
 
     // Check cache first
-    const cacheKey = `shopify_rest_orders_${startStr}_${endStr}`;
+    const cacheKey = `shopify_rest_orders_${startStr}_${endStr}${filterKey}`;
     const cached = cache.get(cacheKey);
     if (cached) {
       console.log(`[ShopifyREST] Cache hit for orders ${startStr} to ${endStr} (${cached.length} orders)`);
@@ -110,8 +118,10 @@ class ShopifyREST {
     const maxPages = 100; // Safety limit
 
     // Build initial URL with date filters
+    // Use financial_status=paid to only get completed paid orders (matches Shopify Admin)
     const params = new URLSearchParams({
-      status: 'any',
+      status: excludeCancelled ? 'any' : 'any', // We filter cancelled in post-processing
+      financial_status: paidOnly ? 'paid' : 'any',
       limit: '250',
       created_at_min: this.formatDateForAPI(startDate),
       created_at_max: this.formatDateForAPI(endDate, true)
@@ -119,7 +129,7 @@ class ShopifyREST {
 
     let url = `/orders.json?${params.toString()}`;
 
-    console.log(`[ShopifyREST] Fetching orders: ${startStr} to ${endStr}`);
+    console.log(`[ShopifyREST] Fetching orders: ${startStr} to ${endStr} (paidOnly=${paidOnly}, excludeCancelled=${excludeCancelled})`);
 
     while (url && pageCount < maxPages) {
       pageCount++;
@@ -167,12 +177,28 @@ class ShopifyREST {
       console.warn(`[ShopifyREST] WARNING: Hit max pages limit (${maxPages})`);
     }
 
-    console.log(`[ShopifyREST] Done: ${allOrders.length} orders in ${pageCount} pages`);
+    // Post-process: filter out cancelled orders if requested
+    let filteredOrders = allOrders;
+    if (excludeCancelled) {
+      filteredOrders = allOrders.filter(order => {
+        // Exclude cancelled orders
+        if (order.cancelled_at) return false;
+        // Exclude voided orders
+        if (order.financial_status === 'voided') return false;
+        return true;
+      });
+
+      if (filteredOrders.length !== allOrders.length) {
+        console.log(`[ShopifyREST] Filtered out ${allOrders.length - filteredOrders.length} cancelled/voided orders`);
+      }
+    }
+
+    console.log(`[ShopifyREST] Done: ${filteredOrders.length} orders in ${pageCount} pages`);
 
     // Cache the result
-    cache.set(cacheKey, allOrders, TTL.ORDERS);
+    cache.set(cacheKey, filteredOrders, TTL.ORDERS);
 
-    return allOrders;
+    return filteredOrders;
   }
 
   /**
@@ -236,23 +262,38 @@ class ShopifyREST {
 
   /**
    * Calculate stats from orders array
+   * Matches Shopify Admin reporting:
+   * - Gross sales = item prices before discounts (subtotal + discounts)
+   * - Net sales = total_price (what customer actually paid)
    */
   calculateStats(orders) {
-    const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
-    const subtotalSales = orders.reduce((sum, o) => sum + parseFloat(o.subtotal_price || 0), 0);
-    const totalDiscounts = orders.reduce((sum, o) => {
+    // Filter out cancelled/voided orders for accurate stats
+    const validOrders = orders.filter(o => !o.cancelled_at && o.financial_status !== 'voided');
+
+    const totalSales = validOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const subtotalSales = validOrders.reduce((sum, o) => sum + parseFloat(o.subtotal_price || 0), 0);
+    const totalDiscounts = validOrders.reduce((sum, o) => {
       const discounts = o.total_discounts ? parseFloat(o.total_discounts) : 0;
       return sum + discounts;
     }, 0);
-    const totalTax = orders.reduce((sum, o) => sum + parseFloat(o.total_tax || 0), 0);
-    const orderCount = orders.length;
+    const totalTax = validOrders.reduce((sum, o) => sum + parseFloat(o.total_tax || 0), 0);
+    const totalShipping = validOrders.reduce((sum, o) => {
+      const shipping = o.total_shipping_price_set?.shop_money?.amount || 0;
+      return sum + parseFloat(shipping);
+    }, 0);
+
+    const orderCount = validOrders.length;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
+
+    // Gross sales = subtotal before discounts applied
+    // This matches Shopify Admin's "Gross sales" calculation
+    const grossSales = subtotalSales + totalDiscounts;
 
     // Count unique customers
     const customerIds = new Set();
     const customerOrderCounts = {};
 
-    orders.forEach(order => {
+    validOrders.forEach(order => {
       if (order.customer?.id) {
         customerIds.add(order.customer.id);
         customerOrderCounts[order.customer.id] = (customerOrderCounts[order.customer.id] || 0) + 1;
@@ -263,11 +304,13 @@ class ShopifyREST {
     const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
 
     return {
-      totalSales: Math.round(totalSales),
-      subtotalSales: Math.round(subtotalSales),
+      totalSales: Math.round(totalSales),        // Net total (what customer paid)
+      netSales: Math.round(totalSales),          // Same as totalSales for clarity
+      subtotalSales: Math.round(subtotalSales),  // After discounts, before shipping/tax
       totalDiscounts: Math.round(totalDiscounts),
       totalTax: Math.round(totalTax),
-      grossSales: Math.round(subtotalSales + totalDiscounts), // Before discounts
+      totalShipping: Math.round(totalShipping),
+      grossSales: Math.round(grossSales),        // Before discounts (matches Shopify Admin)
       orderCount,
       avgOrderValue: Math.round(avgOrderValue),
       uniqueCustomers,
@@ -549,8 +592,11 @@ class ShopifyREST {
 
   /**
    * Get order count for date range
+   * @param {Date} startDate - Start date
+   * @param {Date} endDate - End date
+   * @param {boolean} paidOnly - Only count paid orders (default: true)
    */
-  async getOrderCount(startDate, endDate) {
+  async getOrderCount(startDate, endDate, paidOnly = true) {
     this.ensureInitialized();
 
     try {
@@ -559,6 +605,11 @@ class ShopifyREST {
         created_at_min: this.formatDateForAPI(startDate),
         created_at_max: this.formatDateForAPI(endDate, true)
       });
+
+      // Add financial status filter to match paid orders only
+      if (paidOnly) {
+        params.set('financial_status', 'paid');
+      }
 
       const response = await this.client.get(`/orders/count.json?${params.toString()}`);
       return response.data.count;
