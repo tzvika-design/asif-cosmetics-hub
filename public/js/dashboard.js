@@ -1724,7 +1724,11 @@ document.addEventListener('DOMContentLoaded', function() {
         renderCouponSearchResult(data.data);
       } else {
         if (resultContainer) {
-          resultContainer.innerHTML = `<p style="color: var(--error); text-align: center; margin-top: 15px;">${data.message || 'לא נמצא קופון'}</p>`;
+          let html = `<p style="color: var(--error); text-align: center; margin-top: 15px;">${data.message || 'לא נמצא קופון'}</p>`;
+          if (data.hint) {
+            html += `<p style="color: var(--text-muted); text-align: center; margin-top: 10px; font-size: 0.85rem;">${data.hint}</p>`;
+          }
+          resultContainer.innerHTML = html;
         }
       }
     } catch (e) {
