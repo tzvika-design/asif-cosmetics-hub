@@ -200,17 +200,32 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function loadQuickStats() {
     try {
-      const response = await fetch(API_BASE + '/api/shopify/analytics');
-      const data = await response.json();
+      // Use the new summary endpoint with calendar week and month
+      const [weekResponse, monthResponse] = await Promise.all([
+        fetch(API_BASE + '/api/shopify/analytics/summary?period=week'),
+        fetch(API_BASE + '/api/shopify/analytics/summary?period=month')
+      ]);
 
-      if (data.success) {
-        const { today, week, month, currency } = data.data;
+      const weekData = await weekResponse.json();
+      const monthData = await monthResponse.json();
 
-        const el = (id) => document.getElementById(id);
-        if (el('statOrdersToday')) el('statOrdersToday').textContent = today.orders;
-        if (el('statOrdersWeek')) el('statOrdersWeek').textContent = week.orders;
-        if (el('statSalesMonth')) el('statSalesMonth').textContent = formatCurrency(month.total, currency);
+      const el = (id) => document.getElementById(id);
+
+      // Today's orders - from month response which includes todayOrders
+      if (monthData.success) {
+        if (el('statOrdersToday')) el('statOrdersToday').textContent = monthData.data.todayOrders || 0;
+        // Month sales - calendar month (from 1st of month)
+        if (el('statSalesMonth')) el('statSalesMonth').textContent = formatCurrency(monthData.data.totalSales || 0);
       }
+
+      // Week orders - calendar week (from Sunday)
+      if (weekData.success) {
+        if (el('statOrdersWeek')) el('statOrdersWeek').textContent = weekData.data.orderCount || 0;
+      }
+
+      console.log('Quick stats loaded: Today orders:', monthData.data?.todayOrders,
+                  'Week orders:', weekData.data?.orderCount,
+                  'Month sales:', monthData.data?.totalSales);
     } catch (error) {
       console.error('Stats error:', error);
     }
@@ -636,6 +651,9 @@ document.addEventListener('DOMContentLoaded', function() {
   async function loadMetorikAnalytics(period = currentPeriod) {
     currentPeriod = period;
 
+    // Setup period selector FIRST to ensure buttons work
+    setupPeriodSelector();
+
     // Load all data in parallel
     await Promise.all([
       loadKPICards(period),
@@ -643,13 +661,11 @@ document.addEventListener('DOMContentLoaded', function() {
       loadTopProductsTable(),
       loadRecentOrders()
     ]);
-
-    // Setup period selector
-    setupPeriodSelector();
   }
 
   async function loadKPICards(period) {
     try {
+      console.log('Loading KPI cards for period:', period);
       const response = await fetch(API_BASE + '/api/shopify/analytics/summary?period=' + period);
       const data = await response.json();
 
@@ -657,11 +673,22 @@ document.addEventListener('DOMContentLoaded', function() {
         const d = data.data;
         const el = (id) => document.getElementById(id);
 
-        if (el('kpiTodaySales')) el('kpiTodaySales').textContent = '₪' + Math.round(d.todaySales).toLocaleString();
-        if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = d.todayOrders + ' הזמנות';
-        if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').textContent = d.todayOrders;
-        if (el('kpiAvgOrder')) el('kpiAvgOrder').textContent = '₪' + Math.round(d.avgOrderValue).toLocaleString();
-        if (el('kpiReturningRate')) el('kpiReturningRate').textContent = d.returningRate + '%';
+        // Update KPI values
+        if (el('kpiTodaySales')) el('kpiTodaySales').textContent = '₪' + Math.round(d.totalSales || d.todaySales || 0).toLocaleString();
+        if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = (d.orderCount || d.todayOrders || 0) + ' הזמנות';
+        if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').textContent = d.orderCount || d.todayOrders || 0;
+        if (el('kpiAvgOrder')) el('kpiAvgOrder').textContent = '₪' + Math.round(d.avgOrderValue || 0).toLocaleString();
+        if (el('kpiReturningRate')) el('kpiReturningRate').textContent = (d.returningRate || 0) + '%';
+
+        // Update period label if available
+        if (data.data.period) {
+          const periodLabel = document.getElementById('chartPeriodLabel');
+          if (periodLabel) {
+            periodLabel.textContent = data.data.period.start + ' - ' + data.data.period.end;
+          }
+        }
+
+        console.log('KPI cards updated successfully');
       }
     } catch (e) {
       console.error('KPI cards error:', e);
@@ -670,8 +697,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function loadSalesChart(period) {
     try {
+      console.log('Loading sales chart for period:', period);
       const response = await fetch(API_BASE + '/api/shopify/analytics/sales-chart?period=' + period);
       const data = await response.json();
+
+      console.log('Sales chart API response:', data.success, 'Data points:', data.data?.length || 0);
 
       if (data.success) {
         renderChartJS(data.data);
@@ -681,6 +711,8 @@ document.addEventListener('DOMContentLoaded', function() {
         if (label && data.period) {
           label.textContent = data.period.start + ' - ' + data.period.end;
         }
+      } else {
+        console.error('Sales chart API returned error:', data.message);
       }
     } catch (e) {
       console.error('Sales chart error:', e);
@@ -688,67 +720,94 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function renderChartJS(chartData) {
-    const ctx = document.getElementById('salesChartCanvas');
-    if (!ctx) return;
+    const canvas = document.getElementById('salesChartCanvas');
+    if (!canvas) {
+      console.error('Chart canvas not found');
+      return;
+    }
 
-    // Destroy existing chart
+    // Check if Chart.js is loaded
+    if (typeof Chart === 'undefined') {
+      console.error('Chart.js not loaded');
+      return;
+    }
+
+    // Destroy existing chart properly
     if (salesChart) {
       salesChart.destroy();
+      salesChart = null;
+    }
+
+    // Handle empty or invalid data
+    if (!chartData || !Array.isArray(chartData) || chartData.length === 0) {
+      console.warn('No chart data available');
+      const parent = canvas.parentElement;
+      if (parent) {
+        parent.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">אין נתוני מכירות לתקופה זו</p>';
+      }
+      return;
     }
 
     // Prepare data - show last 14 days max for readability
     const displayData = chartData.slice(-14);
 
-    salesChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: displayData.map(d => d.dayName + ' ' + d.label.split('/').slice(0, 2).join('/')),
-        datasets: [{
-          label: 'מכירות',
-          data: displayData.map(d => d.sales),
-          borderColor: '#d4a853',
-          backgroundColor: 'rgba(212, 168, 83, 0.1)',
-          borderWidth: 2,
-          fill: true,
-          tension: 0.3,
-          pointBackgroundColor: '#d4a853',
-          pointBorderColor: '#d4a853',
-          pointRadius: 4,
-          pointHoverRadius: 6
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            rtl: true,
-            textDirection: 'rtl',
-            callbacks: {
-              label: function(context) {
-                return '₪' + context.parsed.y.toLocaleString();
+    try {
+      const ctx = canvas.getContext('2d');
+      salesChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: displayData.map(d => d.dayName + ' ' + d.label.split('/').slice(0, 2).join('/')),
+          datasets: [{
+            label: 'מכירות',
+            data: displayData.map(d => d.sales),
+            borderColor: '#d4a853',
+            backgroundColor: 'rgba(212, 168, 83, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.3,
+            pointBackgroundColor: '#d4a853',
+            pointBorderColor: '#d4a853',
+            pointRadius: 4,
+            pointHoverRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              rtl: true,
+              textDirection: 'rtl',
+              callbacks: {
+                label: function(context) {
+                  return '₪' + context.parsed.y.toLocaleString();
+                }
               }
             }
-          }
-        },
-        scales: {
-          x: {
-            grid: { color: 'rgba(255,255,255,0.05)' },
-            ticks: { color: '#888', font: { size: 10 } }
           },
-          y: {
-            grid: { color: 'rgba(255,255,255,0.05)' },
-            ticks: {
-              color: '#888',
-              callback: function(value) {
-                return '₪' + value.toLocaleString();
-              }
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: { color: '#888', font: { size: 10 } }
+            },
+            y: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: {
+                color: '#888',
+                callback: function(value) {
+                  return '₪' + value.toLocaleString();
+                }
+              },
+              beginAtZero: true
             }
           }
         }
-      }
-    });
+      });
+      console.log('Chart rendered successfully with', displayData.length, 'data points');
+    } catch (err) {
+      console.error('Error rendering chart:', err);
+    }
   }
 
   async function loadTopProductsTable() {
@@ -811,30 +870,76 @@ document.addEventListener('DOMContentLoaded', function() {
     // Period buttons for Analytics page
     const analyticsSelector = document.getElementById('analyticsPeriodSelector');
     if (analyticsSelector) {
-      analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
-        btn.onclick = function() {
+      const periodBtns = analyticsSelector.querySelectorAll('.period-btn[data-period]');
+      console.log('Setting up', periodBtns.length, 'period buttons');
+
+      periodBtns.forEach(btn => {
+        // Remove any existing listeners by cloning
+        const newBtn = btn.cloneNode(true);
+        btn.parentNode.replaceChild(newBtn, btn);
+
+        newBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          console.log('Period button clicked:', this.dataset.period);
+
+          // Update active state
           analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
           this.classList.add('active');
+
           const period = this.dataset.period;
+          currentPeriod = period;
+
+          // Reload all data with new period
           loadKPICards(period);
           loadSalesChart(period);
-        };
+          loadTopProductsTable();
+        });
       });
     }
 
     // Custom date button for Analytics
     const analyticsCustomBtn = document.getElementById('analyticsCustomDateBtn');
     if (analyticsCustomBtn) {
-      analyticsCustomBtn.onclick = function() {
+      const newCustomBtn = analyticsCustomBtn.cloneNode(true);
+      analyticsCustomBtn.parentNode.replaceChild(newCustomBtn, analyticsCustomBtn);
+
+      newCustomBtn.addEventListener('click', function(e) {
+        e.preventDefault();
         const startDate = document.getElementById('analyticsStartDate').value;
         const endDate = document.getElementById('analyticsEndDate').value;
+        console.log('Custom date clicked:', startDate, '-', endDate);
+
         if (startDate && endDate) {
-          if (analyticsSelector) {
-            analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          const selector = document.getElementById('analyticsPeriodSelector');
+          if (selector) {
+            selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
           }
           loadSalesChartWithDates(startDate, endDate);
+          loadKPICardsWithDates(startDate, endDate);
+        } else {
+          alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      };
+      });
+    }
+  }
+
+  async function loadKPICardsWithDates(startDate, endDate) {
+    try {
+      const response = await fetch(API_BASE + '/api/shopify/analytics/summary?startDate=' + startDate + '&endDate=' + endDate);
+      const data = await response.json();
+
+      if (data.success) {
+        const d = data.data;
+        const el = (id) => document.getElementById(id);
+
+        if (el('kpiTodaySales')) el('kpiTodaySales').textContent = '₪' + Math.round(d.totalSales || d.todaySales || 0).toLocaleString();
+        if (el('kpiTodayOrders')) el('kpiTodayOrders').textContent = (d.orderCount || d.todayOrders || 0) + ' הזמנות';
+        if (el('kpiTodayOrderCount')) el('kpiTodayOrderCount').textContent = d.orderCount || d.todayOrders || 0;
+        if (el('kpiAvgOrder')) el('kpiAvgOrder').textContent = '₪' + Math.round(d.avgOrderValue || 0).toLocaleString();
+        if (el('kpiReturningRate')) el('kpiReturningRate').textContent = (d.returningRate || 0) + '%';
+      }
+    } catch (e) {
+      console.error('KPI cards error:', e);
     }
   }
 
@@ -963,25 +1068,40 @@ document.addEventListener('DOMContentLoaded', function() {
     const selector = document.getElementById('customersPeriodSelector');
     if (!selector) return;
 
-    selector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
-      btn.onclick = function() {
+    const periodBtns = selector.querySelectorAll('.period-btn[data-period]');
+    console.log('Setting up', periodBtns.length, 'customer period buttons');
+
+    periodBtns.forEach(btn => {
+      // Remove existing listeners by cloning
+      const newBtn = btn.cloneNode(true);
+      btn.parentNode.replaceChild(newBtn, btn);
+
+      newBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        console.log('Customer period clicked:', this.dataset.period);
         selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
         customersPeriod = this.dataset.period;
         loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
-      };
+      });
     });
 
     const customBtn = document.getElementById('customersCustomDateBtn');
     if (customBtn) {
-      customBtn.onclick = function() {
+      const newCustomBtn = customBtn.cloneNode(true);
+      customBtn.parentNode.replaceChild(newCustomBtn, customBtn);
+
+      newCustomBtn.addEventListener('click', function(e) {
+        e.preventDefault();
         const startDate = document.getElementById('customersStartDate').value;
         const endDate = document.getElementById('customersEndDate').value;
         if (startDate && endDate) {
-          selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
           loadTopCustomersWithDates(startDate, endDate, customersSearchTerm);
+        } else {
+          alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      };
+      });
     }
   }
 
@@ -1157,25 +1277,40 @@ document.addEventListener('DOMContentLoaded', function() {
     const selector = document.getElementById('productsPeriodSelector');
     if (!selector) return;
 
-    selector.querySelectorAll('.period-btn[data-period]').forEach(btn => {
-      btn.onclick = function() {
+    const periodBtns = selector.querySelectorAll('.period-btn[data-period]');
+    console.log('Setting up', periodBtns.length, 'product period buttons');
+
+    periodBtns.forEach(btn => {
+      // Remove existing listeners by cloning
+      const newBtn = btn.cloneNode(true);
+      btn.parentNode.replaceChild(newBtn, btn);
+
+      newBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        console.log('Product period clicked:', this.dataset.period);
         selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
         this.classList.add('active');
         productsPeriod = this.dataset.period;
         loadTopProductsFiltered(productsPeriod, productsSearchTerm);
-      };
+      });
     });
 
     const customBtn = document.getElementById('productsCustomDateBtn');
     if (customBtn) {
-      customBtn.onclick = function() {
+      const newCustomBtn = customBtn.cloneNode(true);
+      customBtn.parentNode.replaceChild(newCustomBtn, customBtn);
+
+      newCustomBtn.addEventListener('click', function(e) {
+        e.preventDefault();
         const startDate = document.getElementById('productsStartDate').value;
         const endDate = document.getElementById('productsEndDate').value;
         if (startDate && endDate) {
-          selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+          selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
           loadTopProductsWithDates(startDate, endDate, productsSearchTerm);
+        } else {
+          alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      };
+      });
     }
   }
 
@@ -1353,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     container.innerHTML = `
       <table class="data-table">
-        <thead><tr><th></th><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th></tr></thead>
+        <thead><tr><th></th><th>קוד הנחה</th><th>הנחה</th><th>שימושים</th><th>סטטוס</th></tr></thead>
         <tbody>
           ${filtered.map(d => `
             <tr>
@@ -1366,6 +1501,11 @@ document.addEventListener('DOMContentLoaded', function() {
               <td><strong>${d.code || d.title}</strong></td>
               <td>${formatDiscount(d.value, d.valueType)}</td>
               <td>${d.usageCount || 0}</td>
+              <td>
+                <span class="order-status ${d.isActive ? 'paid' : 'pending'}">
+                  ${d.isActive ? 'פעיל' : 'לא פעיל'}
+                </span>
+              </td>
             </tr>
           `).join('')}
         </tbody>

@@ -87,6 +87,7 @@ function formatDateIL(date) {
 }
 
 // Helper: Parse date range params
+// FIXED: week = from Sunday of current week, month = from 1st of current month
 function getDateRange(startDate, endDate, period) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -102,9 +103,14 @@ function getDateRange(startDate, endDate, period) {
     case 'today':
       return { start: today, end: now };
     case 'week':
-      return { start: new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000), end: now };
+      // Current calendar week (from Sunday)
+      const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      const sundayOfThisWeek = new Date(today.getTime() - dayOfWeek * 24 * 60 * 60 * 1000);
+      return { start: sundayOfThisWeek, end: now };
     case 'month':
-      return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+      // Current calendar month (from 1st of month)
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { start: firstOfMonth, end: now };
     case '30days':
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
     case '90days':
@@ -114,9 +120,13 @@ function getDateRange(startDate, endDate, period) {
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
       return { start: lastMonthStart, end: lastMonthEnd };
     case 'year':
-      return { start: new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000), end: now };
+      // Current calendar year (from January 1st)
+      const firstOfYear = new Date(now.getFullYear(), 0, 1);
+      return { start: firstOfYear, end: now };
     default:
-      return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
+      // Default to current month
+      const defaultFirstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { start: defaultFirstOfMonth, end: now };
   }
 }
 
@@ -651,6 +661,7 @@ router.get('/analytics', async (req, res) => {
 });
 
 // GET /api/shopify/discounts - Coupon codes (with caching)
+// FIXED: Fetch ALL price rules and their discount codes (not just first 20)
 router.get('/discounts', async (req, res) => {
   try {
     if (isCacheValid('discounts')) {
@@ -667,9 +678,9 @@ router.get('/discounts', async (req, res) => {
     const { baseUrl, headers } = shopifyService.getConfig();
     const allDiscounts = [];
 
-    console.log('=== FETCHING SHOPIFY DISCOUNTS (RATE LIMITED) ===');
+    console.log('=== FETCHING ALL SHOPIFY DISCOUNTS ===');
 
-    // Fetch price rules
+    // Fetch ALL price rules (with pagination)
     let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
     let allPriceRules = [];
 
@@ -680,6 +691,7 @@ router.get('/discounts', async (req, res) => {
 
       const rules = priceRulesResponse.data.price_rules || [];
       allPriceRules = allPriceRules.concat(rules);
+      console.log(`Fetched ${rules.length} price rules (total: ${allPriceRules.length})`);
 
       const linkHeader = priceRulesResponse.headers.link;
       priceRulesUrl = null;
@@ -689,18 +701,22 @@ router.get('/discounts', async (req, res) => {
       }
     }
 
-    // Get discount codes for each price rule (limit to first 20 rules to prevent timeout)
-    const rulesToProcess = allPriceRules.slice(0, 20);
-    for (let i = 0; i < rulesToProcess.length; i++) {
-      const rule = rulesToProcess[i];
+    console.log(`Total price rules found: ${allPriceRules.length}`);
+
+    // Get discount codes for ALL price rules (not just first 20)
+    for (let i = 0; i < allPriceRules.length; i++) {
+      const rule = allPriceRules[i];
       let codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
 
-      if (i > 0) await new Promise(resolve => setTimeout(resolve, 300));
+      // Rate limiting: wait between requests
+      if (i > 0 && i % 5 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
 
       while (codesUrl) {
         try {
           const codesResponse = await rateLimitedRequest(() =>
-            axios.get(codesUrl, axiosConfig(headers, 60000))
+            axios.get(codesUrl, axiosConfig(headers, 30000))
           );
 
           const codes = codesResponse.data.discount_codes || [];
@@ -718,7 +734,9 @@ router.get('/discounts', async (req, res) => {
               usageLimit: rule.usage_limit,
               startsAt: rule.starts_at,
               endsAt: rule.ends_at,
-              source: 'price_rule'
+              source: 'price_rule',
+              // Check if coupon is active
+              isActive: isDiscountActive(rule)
             });
           }
 
@@ -729,8 +747,10 @@ router.get('/discounts', async (req, res) => {
             if (nextMatch) codesUrl = nextMatch[1];
           }
         } catch (e) {
+          console.error(`Error fetching codes for rule ${rule.id}:`, e.message);
           if (e.response?.status === 429) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log('Rate limited, waiting 3 seconds...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
             continue;
           }
           codesUrl = null;
@@ -738,7 +758,13 @@ router.get('/discounts', async (req, res) => {
       }
     }
 
-    allDiscounts.sort((a, b) => b.usageCount - a.usageCount);
+    console.log(`Total discount codes found: ${allDiscounts.length}`);
+
+    // Sort: active first, then by usage count
+    allDiscounts.sort((a, b) => {
+      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+      return b.usageCount - a.usageCount;
+    });
 
     cache.discounts.data = allDiscounts;
     cache.discounts.timestamp = Date.now();
@@ -747,6 +773,7 @@ router.get('/discounts', async (req, res) => {
       success: true,
       data: allDiscounts,
       total: allDiscounts.length,
+      totalPriceRules: allPriceRules.length,
       cached: false
     });
 
@@ -764,6 +791,30 @@ router.get('/discounts', async (req, res) => {
     res.status(500).json({ error: true, message: error.message });
   }
 });
+
+// Helper function to check if a discount is active
+function isDiscountActive(rule) {
+  const now = new Date();
+
+  // Check start date
+  if (rule.starts_at) {
+    const startDate = new Date(rule.starts_at);
+    if (now < startDate) return false;
+  }
+
+  // Check end date
+  if (rule.ends_at) {
+    const endDate = new Date(rule.ends_at);
+    if (now > endDate) return false;
+  }
+
+  // Check usage limit
+  if (rule.usage_limit && rule.usage_limit > 0) {
+    // Note: We can't check actual usage here without additional API call
+  }
+
+  return true;
+}
 
 // GET /api/shopify/top-products - Legacy endpoint
 router.get('/top-products', async (req, res) => {
