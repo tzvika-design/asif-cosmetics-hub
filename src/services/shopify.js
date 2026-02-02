@@ -26,16 +26,33 @@ class ShopifyService {
     return { baseUrl: this.baseUrl, headers: this.headers };
   }
 
-  // Orders
+  // Orders - with date filtering support
   async getOrders(params = {}) {
     const { baseUrl, headers } = this.getConfig();
-    const query = new URLSearchParams({
-      status: 'any',
-      limit: 50,
-      ...params
-    }).toString();
 
-    const response = await axios.get(`${baseUrl}/orders.json?${query}`, { headers });
+    // Build query params
+    const queryParams = {
+      status: params.status || 'any',
+      limit: params.limit || 250
+    };
+
+    // Add date filtering if provided (ISO format for Shopify API)
+    if (params.created_at_min) {
+      queryParams.created_at_min = params.created_at_min;
+    }
+    if (params.created_at_max) {
+      queryParams.created_at_max = params.created_at_max;
+    }
+
+    const query = new URLSearchParams(queryParams).toString();
+    console.log(`[Shopify] Fetching orders: ${query}`);
+
+    const response = await axios.get(`${baseUrl}/orders.json?${query}`, {
+      headers,
+      timeout: 30000
+    });
+
+    console.log(`[Shopify] Got ${response.data.orders?.length || 0} orders`);
     return response.data.orders;
   }
 

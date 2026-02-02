@@ -697,44 +697,66 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function loadSalesChart(period) {
     try {
-      console.log('Loading sales chart for period:', period);
+      console.log('[Chart] Loading sales chart for period:', period);
+
       const response = await fetch(API_BASE + '/api/shopify/analytics/sales-chart?period=' + period);
+
+      if (!response.ok) {
+        console.error('[Chart] HTTP error:', response.status);
+        return;
+      }
+
       const data = await response.json();
 
-      console.log('Sales chart API response:', data.success, 'Data points:', data.data?.length || 0);
+      console.log('[Chart] API response:', {
+        success: data.success,
+        dataPoints: data.data?.length || 0,
+        period: data.period,
+        totalOrders: data.totalOrders,
+        totalSales: data.totalSales
+      });
 
-      if (data.success) {
+      if (data.success && data.data && data.data.length > 0) {
         renderChartJS(data.data);
 
-        // Update period label
+        // Update period label - show start first, then end
         const label = document.getElementById('chartPeriodLabel');
         if (label && data.period) {
-          label.textContent = data.period.start + ' - ' + data.period.end;
+          label.textContent = data.period.start + ' עד ' + data.period.end;
         }
       } else {
-        console.error('Sales chart API returned error:', data.message);
+        console.warn('[Chart] No data to display');
+        const chartContainer = document.querySelector('.chart-container');
+        if (chartContainer) {
+          chartContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">אין נתוני מכירות לתקופה זו</p>';
+        }
       }
     } catch (e) {
-      console.error('Sales chart error:', e);
+      console.error('[Chart] Error:', e);
     }
   }
 
   function renderChartJS(chartData) {
+    console.log('[Chart] renderChartJS called with', chartData?.length, 'data points');
+
     const chartContainer = document.querySelector('.chart-container');
     if (!chartContainer) {
-      console.error('Chart container not found');
+      console.error('[Chart] Container not found');
       return;
     }
 
     // Check if Chart.js is loaded
     if (typeof Chart === 'undefined') {
-      console.error('Chart.js not loaded - waiting for it');
+      console.error('[Chart] Chart.js not loaded yet, retrying in 500ms');
       setTimeout(() => renderChartJS(chartData), 500);
       return;
     }
 
+    console.log('[Chart] Chart.js is loaded:', typeof Chart);
+
     // Destroy existing chart properly
     if (salesChart) {
+      console.log('[Chart] Destroying existing chart');
       salesChart.destroy();
       salesChart = null;
     }

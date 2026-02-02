@@ -87,30 +87,29 @@ function formatDateIL(date) {
 }
 
 // Helper: Parse date range params
-// FIXED: week = from Sunday of current week, month = from 1st of current month
+// Returns { start, end } where start is OLDER date, end is NEWER date
 function getDateRange(startDate, endDate, period) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   if (startDate && endDate) {
-    return {
-      start: new Date(startDate),
-      end: new Date(endDate)
-    };
+    const s = new Date(startDate);
+    const e = new Date(endDate);
+    // Ensure start is before end
+    return s < e ? { start: s, end: e } : { start: e, end: s };
   }
 
   switch (period) {
     case 'today':
       return { start: today, end: now };
     case 'week':
-      // Current calendar week (from Sunday)
-      const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
-      const sundayOfThisWeek = new Date(today.getTime() - dayOfWeek * 24 * 60 * 60 * 1000);
-      return { start: sundayOfThisWeek, end: now };
+      // Last 7 days
+      const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return { start: weekAgo, end: now };
     case 'month':
-      // Current calendar month (from 1st of month)
-      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { start: firstOfMonth, end: now };
+      // Last 30 days
+      const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return { start: monthAgo, end: now };
     case '30days':
       return { start: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000), end: now };
     case '90days':
@@ -120,13 +119,13 @@ function getDateRange(startDate, endDate, period) {
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
       return { start: lastMonthStart, end: lastMonthEnd };
     case 'year':
-      // Current calendar year (from January 1st)
-      const firstOfYear = new Date(now.getFullYear(), 0, 1);
-      return { start: firstOfYear, end: now };
+      // Last 365 days (full year back)
+      const yearAgo = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000);
+      return { start: yearAgo, end: now };
     default:
-      // Default to current month
-      const defaultFirstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { start: defaultFirstOfMonth, end: now };
+      // Default to last 30 days
+      const defaultStart = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return { start: defaultStart, end: now };
   }
 }
 
@@ -138,27 +137,32 @@ function getDateRange(startDate, endDate, period) {
 router.get('/analytics/summary', async (req, res) => {
   try {
     const { startDate, endDate, period } = req.query;
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
 
-    // Check cache
-    if (isCacheValid('analytics') && !startDate && !endDate) {
+    console.log(`[Analytics Summary] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
+
+    // Check cache only for default requests
+    const cacheKey = 'analytics_' + (period || 'default');
+    if (!startDate && !endDate && isCacheValid('analytics')) {
       console.log('Returning cached analytics summary');
       return res.json({ ...cache.analytics.data, cached: true, cacheAge: getCacheAge('analytics') });
     }
 
-    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
-    const customers = await shopifyService.getCustomers({ limit: 250 });
-
-    const { start, end } = getDateRange(startDate, endDate, period || 'month');
-
-    // Filter orders by date range
-    const filteredOrders = orders.filter(o => {
-      const orderDate = new Date(o.created_at);
-      return orderDate >= start && orderDate <= end;
+    // Fetch orders with date filtering at API level
+    const orders = await shopifyService.getOrders({
+      status: 'any',
+      limit: 250,
+      created_at_min: start.toISOString(),
+      created_at_max: end.toISOString()
     });
 
-    // Calculate metrics
-    const totalSales = filteredOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
-    const orderCount = filteredOrders.length;
+    const customers = await shopifyService.getCustomers({ limit: 250 });
+
+    console.log(`[Analytics Summary] Fetched ${orders.length} orders for period`);
+
+    // Calculate metrics from orders (already filtered by API)
+    const totalSales = orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const orderCount = orders.length;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
 
     // Returning customers calculation
@@ -172,7 +176,7 @@ router.get('/analytics/summary', async (req, res) => {
     const returningCustomers = Object.values(customerOrderCounts).filter(c => c > 1).length;
     const returningRate = totalCustomers > 0 ? Math.round((returningCustomers / totalCustomers) * 100) : 0;
 
-    // Today's specific stats
+    // Today's specific stats (need separate query)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayOrders = orders.filter(o => new Date(o.created_at) >= today);
@@ -195,7 +199,7 @@ router.get('/analytics/summary', async (req, res) => {
       }
     };
 
-    // Update cache
+    // Update cache for default requests
     if (!startDate && !endDate) {
       cache.analytics.data = result;
       cache.analytics.timestamp = Date.now();
@@ -215,25 +219,28 @@ router.get('/analytics/summary', async (req, res) => {
 // GET /api/shopify/analytics/sales-chart - Sales data for chart
 router.get('/analytics/sales-chart', async (req, res) => {
   try {
-    const { startDate, endDate, period, groupBy } = req.query;
+    const { startDate, endDate, period } = req.query;
+    const { start, end } = getDateRange(startDate, endDate, period || '30days');
 
-    if (isCacheValid('salesChart') && !startDate && !endDate) {
+    console.log(`[Sales Chart] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
+
+    if (!startDate && !endDate && isCacheValid('salesChart')) {
       console.log('Returning cached sales chart');
       return res.json({ ...cache.salesChart.data, cached: true, cacheAge: getCacheAge('salesChart') });
     }
 
-    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
-    const { start, end } = getDateRange(startDate, endDate, period || '30days');
-
-    // Filter orders
-    const filteredOrders = orders.filter(o => {
-      const orderDate = new Date(o.created_at);
-      return orderDate >= start && orderDate <= end;
+    // Fetch orders with date filtering at API level
+    const orders = await shopifyService.getOrders({
+      status: 'any',
+      limit: 250,
+      created_at_min: start.toISOString(),
+      created_at_max: end.toISOString()
     });
 
-    // Group by day/week/month
+    console.log(`[Sales Chart] Fetched ${orders.length} orders for chart`);
+
+    // Group by day
     const salesByDate = {};
-    const groupByDays = groupBy === 'week' ? 7 : groupBy === 'month' ? 30 : 1;
 
     // Generate all dates in range
     const dateLabels = [];
@@ -249,8 +256,8 @@ router.get('/analytics/sales-chart', async (req, res) => {
       currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    // Fill in actual data
-    filteredOrders.forEach(order => {
+    // Fill in actual data from orders (already filtered by API)
+    orders.forEach(order => {
       const dateKey = new Date(order.created_at).toISOString().split('T')[0];
       if (salesByDate[dateKey]) {
         salesByDate[dateKey].sales += parseFloat(order.total_price || 0);
@@ -270,7 +277,9 @@ router.get('/analytics/sales-chart', async (req, res) => {
     const result = {
       success: true,
       data: chartData,
-      period: { start: formatDateIL(start), end: formatDateIL(end) }
+      period: { start: formatDateIL(start), end: formatDateIL(end) },
+      totalOrders: orders.length,
+      totalSales: Math.round(orders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0))
     };
 
     if (!startDate && !endDate) {
@@ -293,6 +302,9 @@ router.get('/analytics/sales-chart', async (req, res) => {
 router.get('/analytics/top-products', async (req, res) => {
   try {
     const { limit = 10, period, startDate, endDate, search } = req.query;
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
+
+    console.log(`[Top Products] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
 
     // Skip cache if filtering
     const useCache = !period && !startDate && !endDate && !search;
@@ -301,19 +313,18 @@ router.get('/analytics/top-products', async (req, res) => {
       return res.json({ ...cache.topProducts.data, cached: true, cacheAge: getCacheAge('topProducts') });
     }
 
+    // Fetch products and orders with date filtering
     const [products, orders] = await Promise.all([
       shopifyService.getProducts({ limit: 250 }),
-      shopifyService.getOrders({ status: 'any', limit: 250 })
+      shopifyService.getOrders({
+        status: 'any',
+        limit: 250,
+        created_at_min: start.toISOString(),
+        created_at_max: end.toISOString()
+      })
     ]);
 
-    // Get date range
-    const { start, end } = getDateRange(startDate, endDate, period || 'month');
-
-    // Filter orders by date range
-    const filteredOrders = orders.filter(o => {
-      const orderDate = new Date(o.created_at);
-      return orderDate >= start && orderDate <= end;
-    });
+    console.log(`[Top Products] Fetched ${orders.length} orders, ${products.length} products`);
 
     // Build product map for inventory lookup
     const productMap = {};
@@ -326,9 +337,9 @@ router.get('/analytics/top-products', async (req, res) => {
       };
     });
 
-    // Count sales from line items
+    // Count sales from line items (orders already filtered by API)
     const productSales = {};
-    filteredOrders.forEach(order => {
+    orders.forEach(order => {
       (order.line_items || []).forEach(item => {
         const productId = item.product_id;
         if (!productSales[productId]) {
@@ -396,6 +407,9 @@ router.get('/analytics/top-products', async (req, res) => {
 router.get('/analytics/top-customers', async (req, res) => {
   try {
     const { limit = 20, period, startDate, endDate, search } = req.query;
+    const { start, end } = getDateRange(startDate, endDate, period || 'month');
+
+    console.log(`[Top Customers] Period: ${period}, Range: ${start.toISOString()} to ${end.toISOString()}`);
 
     // Skip cache if filtering
     const useCache = !period && !startDate && !endDate && !search;
@@ -404,20 +418,19 @@ router.get('/analytics/top-customers', async (req, res) => {
       return res.json({ ...cache.topCustomers.data, cached: true, cacheAge: getCacheAge('topCustomers') });
     }
 
-    const orders = await shopifyService.getOrders({ status: 'any', limit: 250 });
-
-    // Get date range
-    const { start, end } = getDateRange(startDate, endDate, period || 'month');
-
-    // Filter orders by date range
-    const filteredOrders = orders.filter(o => {
-      const orderDate = new Date(o.created_at);
-      return orderDate >= start && orderDate <= end;
+    // Fetch orders with date filtering at API level
+    const orders = await shopifyService.getOrders({
+      status: 'any',
+      limit: 250,
+      created_at_min: start.toISOString(),
+      created_at_max: end.toISOString()
     });
 
-    // Aggregate by customer
+    console.log(`[Top Customers] Fetched ${orders.length} orders`);
+
+    // Aggregate by customer (orders already filtered by API)
     const customerStats = {};
-    filteredOrders.forEach(order => {
+    orders.forEach(order => {
       if (!order.customer?.id) return;
 
       const customerId = order.customer.id;
@@ -661,8 +674,9 @@ router.get('/analytics', async (req, res) => {
 });
 
 // GET /api/shopify/discounts/search - Search for specific coupon code
-// NEW: Search-based approach - user enters coupon code and we find it
 router.get('/discounts/search', async (req, res) => {
+  const startTime = Date.now();
+
   try {
     const { code } = req.query;
 
@@ -674,82 +688,92 @@ router.get('/discounts/search', async (req, res) => {
     }
 
     const searchCode = code.trim().toUpperCase();
-    console.log(`Searching for coupon: ${searchCode}`);
+    console.log(`[Coupon Search] Searching for: "${searchCode}"`);
 
     const { baseUrl, headers } = shopifyService.getConfig();
 
-    // Fetch all price rules
-    let priceRulesUrl = `${baseUrl}/price_rules.json?limit=250`;
+    if (!baseUrl || !headers) {
+      console.error('[Coupon Search] Missing Shopify config');
+      return res.status(500).json({ success: false, message: 'Shopify לא מוגדר' });
+    }
+
+    // Fetch price rules with shorter timeout
+    const priceRulesUrl = `${baseUrl}/price_rules.json?limit=100`;
+    console.log(`[Coupon Search] Fetching price rules...`);
+
+    let priceRulesResponse;
+    try {
+      priceRulesResponse = await axios.get(priceRulesUrl, {
+        headers,
+        timeout: 15000 // 15 second timeout
+      });
+    } catch (e) {
+      console.error('[Coupon Search] Error fetching price rules:', e.message);
+      return res.json({ success: false, message: 'שגיאה בחיבור ל-Shopify: ' + e.message });
+    }
+
+    const rules = priceRulesResponse.data.price_rules || [];
+    console.log(`[Coupon Search] Found ${rules.length} price rules, searching...`);
+
     let foundCoupon = null;
 
-    while (priceRulesUrl && !foundCoupon) {
-      const priceRulesResponse = await rateLimitedRequest(() =>
-        axios.get(priceRulesUrl, axiosConfig(headers, 30000))
-      );
+    // Search discount codes for each rule (with early exit)
+    for (let i = 0; i < rules.length && !foundCoupon; i++) {
+      const rule = rules[i];
 
-      const rules = priceRulesResponse.data.price_rules || [];
+      // Add small delay every 5 rules to avoid rate limiting
+      if (i > 0 && i % 5 === 0) {
+        await new Promise(r => setTimeout(r, 200));
+      }
 
-      // Search discount codes for each rule
-      for (const rule of rules) {
-        const codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json?limit=250`;
+      try {
+        const codesUrl = `${baseUrl}/price_rules/${rule.id}/discount_codes.json`;
+        const codesResponse = await axios.get(codesUrl, {
+          headers,
+          timeout: 10000
+        });
 
-        try {
-          const codesResponse = await rateLimitedRequest(() =>
-            axios.get(codesUrl, axiosConfig(headers, 15000))
-          );
+        const codes = codesResponse.data.discount_codes || [];
 
-          const codes = codesResponse.data.discount_codes || [];
-          const matchingCode = codes.find(c => c.code.toUpperCase() === searchCode);
-
-          if (matchingCode) {
+        for (const c of codes) {
+          if (c.code.toUpperCase() === searchCode) {
             foundCoupon = {
-              id: matchingCode.id,
+              id: c.id,
               priceRuleId: rule.id,
-              code: matchingCode.code,
+              code: c.code,
               value: rule.value,
               valueType: rule.value_type,
               targetType: rule.target_type,
-              usageCount: matchingCode.usage_count || 0,
+              usageCount: c.usage_count || 0,
               usageLimit: rule.usage_limit,
               startsAt: rule.starts_at,
               endsAt: rule.ends_at,
               isActive: isDiscountActive(rule),
               minimumAmount: rule.prerequisite_subtotal_range?.greater_than_or_equal_to || null,
-              oncePerCustomer: rule.once_per_customer || false,
-              customerSelection: rule.customer_selection
+              oncePerCustomer: rule.once_per_customer || false
             };
+            console.log(`[Coupon Search] FOUND "${c.code}" in rule ${rule.id}`);
             break;
           }
-        } catch (e) {
-          console.error(`Error searching rule ${rule.id}:`, e.message);
         }
-      }
-
-      // Check for pagination
-      const linkHeader = priceRulesResponse.headers.link;
-      priceRulesUrl = null;
-      if (linkHeader && !foundCoupon) {
-        const nextMatch = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
-        if (nextMatch) priceRulesUrl = nextMatch[1];
+      } catch (e) {
+        // Skip this rule on error, continue searching
+        console.log(`[Coupon Search] Skipped rule ${rule.id}: ${e.message}`);
       }
     }
 
+    const elapsed = Date.now() - startTime;
+    console.log(`[Coupon Search] Completed in ${elapsed}ms, found: ${!!foundCoupon}`);
+
     if (foundCoupon) {
-      console.log(`Found coupon: ${foundCoupon.code}`);
-      res.json({
-        success: true,
-        data: foundCoupon
-      });
+      res.json({ success: true, data: foundCoupon });
     } else {
-      res.json({
-        success: false,
-        message: `לא נמצא קופון עם הקוד "${code}"`
-      });
+      res.json({ success: false, message: `לא נמצא קופון "${code}"` });
     }
 
   } catch (error) {
-    console.error('Coupon search error:', error.message);
-    res.status(500).json({ error: true, message: error.message });
+    console.error('[Coupon Search] Error:', error.message);
+    res.json({ success: false, message: 'שגיאה בחיפוש: ' + error.message });
   }
 });
 
