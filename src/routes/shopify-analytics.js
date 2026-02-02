@@ -1651,7 +1651,7 @@ router.get('/debug/last-month', async (req, res) => {
 
 /**
  * GET /api/shopify/debug/last-year
- * Debug: Check 2025 orders - DIRECT API CALL
+ * Debug: Check 2025 orders - first page only (quick test)
  */
 router.get('/debug/last-year', async (req, res) => {
   const axios = require('axios');
@@ -1664,7 +1664,6 @@ router.get('/debug/last-year', async (req, res) => {
   const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
 
   try {
-    // Direct REST API call for 2025 orders
     const response = await axios.get(`${baseUrl}/orders.json`, {
       headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
       params: {
@@ -1691,7 +1690,7 @@ router.get('/debug/last-year', async (req, res) => {
         total_price: o.total_price,
         customer: o.customer ? `${o.customer.first_name} ${o.customer.last_name}` : 'Guest'
       })),
-      note: orders.length === 250 ? 'There may be more orders (pagination needed)' : `All ${orders.length} orders fetched`,
+      note: orders.length === 250 ? 'First page only. Use /debug/last-year-full for all orders' : `All ${orders.length} orders fetched`,
       hasMorePages: !!response.headers.link?.includes('rel="next"')
     });
 
@@ -1700,10 +1699,102 @@ router.get('/debug/last-year', async (req, res) => {
       success: false,
       error: error.message,
       statusCode: error.response?.status,
-      responseData: error.response?.data,
-      hint: error.response?.status === 403
-        ? 'Access denied - check if read_all_orders scope is enabled and app is reinstalled'
-        : 'Check Railway logs for more details'
+      responseData: error.response?.data
+    });
+  }
+});
+
+/**
+ * GET /api/shopify/debug/last-year-full
+ * Fetch ALL 2025 orders with pagination - may take a while
+ */
+router.get('/debug/last-year-full', async (req, res) => {
+  const axios = require('axios');
+
+  if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+    return res.status(400).json({ success: false, error: 'Missing Shopify credentials' });
+  }
+
+  const apiVersion = process.env.SHOPIFY_API_VERSION || '2024-01';
+  const baseUrl = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/${apiVersion}`;
+  const headers = { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN };
+
+  const allOrders = [];
+  let pageCount = 0;
+  let url = `${baseUrl}/orders.json?status=any&limit=250&created_at_min=2025-01-01T00:00:00%2B02:00&created_at_max=2025-12-31T23:59:59%2B02:00`;
+
+  console.log('[Debug] Fetching ALL 2025 orders...');
+
+  try {
+    while (url && pageCount < 100) {
+      pageCount++;
+      console.log(`[Debug] Page ${pageCount}...`);
+
+      const response = await axios.get(url, { headers, timeout: 30000 });
+      const orders = response.data.orders || [];
+      allOrders.push(...orders);
+
+      console.log(`[Debug] Page ${pageCount}: ${orders.length} orders (total: ${allOrders.length})`);
+
+      // Get next page URL from Link header
+      const linkHeader = response.headers.link;
+      if (linkHeader && linkHeader.includes('rel="next"')) {
+        const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+        url = match ? match[1] : null;
+        if (url) {
+          await new Promise(r => setTimeout(r, 300)); // Rate limiting
+        }
+      } else {
+        url = null;
+      }
+    }
+
+    const totalSales = allOrders.reduce((sum, o) => sum + parseFloat(o.total_price || 0), 0);
+    const totalDiscounts = allOrders.reduce((sum, o) => sum + parseFloat(o.total_discounts || 0), 0);
+
+    // Group by month
+    const monthlyStats = {};
+    allOrders.forEach(order => {
+      const month = order.created_at.substring(0, 7); // YYYY-MM
+      if (!monthlyStats[month]) {
+        monthlyStats[month] = { orders: 0, sales: 0 };
+      }
+      monthlyStats[month].orders++;
+      monthlyStats[month].sales += parseFloat(order.total_price || 0);
+    });
+
+    res.json({
+      success: true,
+      year: 2025,
+      totalOrders: allOrders.length,
+      totalSales: Math.round(totalSales),
+      totalDiscounts: Math.round(totalDiscounts),
+      avgOrderValue: Math.round(totalSales / allOrders.length),
+      pagesLoaded: pageCount,
+      monthlyBreakdown: Object.entries(monthlyStats)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, stats]) => ({
+          month,
+          orders: stats.orders,
+          sales: Math.round(stats.sales)
+        })),
+      firstOrder: allOrders[allOrders.length - 1] ? {
+        name: allOrders[allOrders.length - 1].name,
+        date: allOrders[allOrders.length - 1].created_at
+      } : null,
+      lastOrder: allOrders[0] ? {
+        name: allOrders[0].name,
+        date: allOrders[0].created_at
+      } : null
+    });
+
+  } catch (error) {
+    console.error('[Debug] Error:', error.message);
+    res.json({
+      success: false,
+      error: error.message,
+      ordersLoadedSoFar: allOrders.length,
+      pagesLoaded: pageCount
     });
   }
 });
