@@ -647,20 +647,30 @@ document.addEventListener('DOMContentLoaded', function() {
 
   let salesChart = null;
   let currentPeriod = 'month';
+  let analyticsSetupDone = false;
 
   async function loadMetorikAnalytics(period = currentPeriod) {
     currentPeriod = period;
+    console.log('[Analytics] Loading analytics page, period:', period);
 
-    // Setup period selector FIRST to ensure buttons work
-    setupPeriodSelector();
+    // Setup period selector ONCE
+    if (!analyticsSetupDone) {
+      setupPeriodSelector();
+      analyticsSetupDone = true;
+    }
 
     // Load all data in parallel
-    await Promise.all([
-      loadKPICards(period),
-      loadSalesChart(period),
-      loadTopProductsTable(),
-      loadRecentOrders()
-    ]);
+    try {
+      await Promise.all([
+        loadKPICards(period),
+        loadSalesChart(period),
+        loadTopProductsTable(),
+        loadRecentOrders()
+      ]);
+      console.log('[Analytics] All data loaded');
+    } catch (err) {
+      console.error('[Analytics] Error loading data:', err);
+    }
   }
 
   async function loadKPICards(period) {
@@ -739,7 +749,10 @@ document.addEventListener('DOMContentLoaded', function() {
   function renderChartJS(chartData) {
     console.log('[Chart] renderChartJS called with', chartData?.length, 'data points');
 
-    const chartContainer = document.querySelector('.chart-container');
+    // Find the chart container inside the analytics page
+    const analyticsPage = document.getElementById('page-shopify-analytics');
+    const chartContainer = analyticsPage ? analyticsPage.querySelector('.chart-container') : document.querySelector('.chart-container');
+
     if (!chartContainer) {
       console.error('[Chart] Container not found');
       return;
@@ -752,43 +765,56 @@ document.addEventListener('DOMContentLoaded', function() {
       return;
     }
 
-    console.log('[Chart] Chart.js is loaded:', typeof Chart);
+    console.log('[Chart] Chart.js loaded, container found');
 
     // Destroy existing chart properly
     if (salesChart) {
       console.log('[Chart] Destroying existing chart');
-      salesChart.destroy();
+      try {
+        salesChart.destroy();
+      } catch (e) {
+        console.warn('[Chart] Error destroying chart:', e);
+      }
       salesChart = null;
     }
 
     // Handle empty or invalid data
     if (!chartData || !Array.isArray(chartData) || chartData.length === 0) {
-      console.warn('No chart data available');
+      console.warn('[Chart] No chart data available');
       chartContainer.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">אין נתוני מכירות לתקופה זו</p>';
       return;
     }
 
-    // Ensure canvas exists
-    let canvas = document.getElementById('salesChartCanvas');
+    // Always recreate canvas to avoid stale state
+    chartContainer.innerHTML = '<canvas id="salesChartCanvas" style="width:100%;height:100%;"></canvas>';
+    const canvas = document.getElementById('salesChartCanvas');
+
     if (!canvas) {
-      chartContainer.innerHTML = '<canvas id="salesChartCanvas"></canvas>';
-      canvas = document.getElementById('salesChartCanvas');
+      console.error('[Chart] Could not create canvas');
+      return;
     }
 
     // Prepare data - show last 14 days max for readability
     const displayData = chartData.slice(-14);
 
-    console.log('Rendering chart with', displayData.length, 'data points');
+    // Filter out days with zero sales for cleaner display, unless all are zero
+    const hasNonZero = displayData.some(d => d.sales > 0);
+    const finalData = hasNonZero ? displayData : displayData.slice(-7);
+
+    console.log('[Chart] Rendering with', finalData.length, 'data points');
 
     try {
       const ctx = canvas.getContext('2d');
       salesChart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: displayData.map(d => d.dayName + ' ' + d.label.split('/').slice(0, 2).join('/')),
+          labels: finalData.map(d => {
+            const parts = d.label.split('/');
+            return parts[0] + '/' + parts[1];
+          }),
           datasets: [{
             label: 'מכירות',
-            data: displayData.map(d => d.sales),
+            data: finalData.map(d => d.sales),
             borderColor: '#d4a853',
             backgroundColor: 'rgba(212, 168, 83, 0.1)',
             borderWidth: 2,
@@ -833,9 +859,10 @@ document.addEventListener('DOMContentLoaded', function() {
           }
         }
       });
-      console.log('Chart rendered successfully with', displayData.length, 'data points');
+      console.log('[Chart] SUCCESS - Chart rendered with', finalData.length, 'points');
     } catch (err) {
-      console.error('Error rendering chart:', err);
+      console.error('[Chart] ERROR rendering:', err);
+      chartContainer.innerHTML = '<p style="color: var(--error); text-align: center; padding: 40px;">שגיאה בטעינת הגרף</p>';
     }
   }
 
@@ -896,60 +923,50 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function setupPeriodSelector() {
-    // Period buttons for Analytics page
+    console.log('[Setup] Setting up period selector');
+
+    // Use event delegation on the selector container
     const analyticsSelector = document.getElementById('analyticsPeriodSelector');
     if (analyticsSelector) {
-      const periodBtns = analyticsSelector.querySelectorAll('.period-btn[data-period]');
-      console.log('Setting up', periodBtns.length, 'analytics period buttons');
-
-      periodBtns.forEach(btn => {
-        // Use direct event listener without cloning to avoid issues
-        btn.onclick = null; // Clear any existing
-
-        btn.addEventListener('click', async function(e) {
+      // Remove old listener and add new one using onclick
+      analyticsSelector.onclick = function(e) {
+        const btn = e.target.closest('.period-btn[data-period]');
+        if (btn) {
           e.preventDefault();
-          e.stopPropagation();
+          const period = btn.dataset.period;
+          console.log('[Period] Button clicked:', period);
 
-          const period = this.dataset.period;
-          console.log('Analytics period clicked:', period);
+          // Update active state
+          analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
 
-          // Update active state IMMEDIATELY
-          analyticsSelector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
-          this.classList.add('active');
-
-          // Update global state
+          // Update global state and load data
           currentPeriod = period;
-
-          // Load data immediately - don't wait
-          console.log('Loading data for period:', period);
           loadKPICards(period);
           loadSalesChart(period);
           loadTopProductsTable();
-        }, { once: false });
-      });
+        }
+      };
+      console.log('[Setup] Analytics period selector ready');
     }
 
-    // Custom date button for Analytics
+    // Custom date button
     const analyticsCustomBtn = document.getElementById('analyticsCustomDateBtn');
     if (analyticsCustomBtn) {
-      analyticsCustomBtn.onclick = null;
-      analyticsCustomBtn.addEventListener('click', function(e) {
+      analyticsCustomBtn.onclick = function(e) {
         e.preventDefault();
         const startDate = document.getElementById('analyticsStartDate').value;
         const endDate = document.getElementById('analyticsEndDate').value;
-        console.log('Custom date clicked:', startDate, '-', endDate);
+        console.log('[Period] Custom date:', startDate, '-', endDate);
 
         if (startDate && endDate) {
-          const selector = document.getElementById('analyticsPeriodSelector');
-          if (selector) {
-            selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
-          }
+          analyticsSelector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
           loadSalesChartWithDates(startDate, endDate);
           loadKPICardsWithDates(startDate, endDate);
         } else {
           alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      });
+      };
     }
   }
 
@@ -1027,12 +1044,17 @@ document.addEventListener('DOMContentLoaded', function() {
   let customersData = [];
   let customersSortColumn = 'totalSpend';
   let customersSortAsc = false; // false = high to low (default)
+  let customersSetupDone = false;
 
   async function loadCustomersPage() {
-    setupCustomersPeriodSelector();
-    setupCustomersSearch();
-    setupCustomersSorting();
-    // Load data with current period (not waiting for click)
+    console.log('[Customers] Loading customers page');
+    if (!customersSetupDone) {
+      setupCustomersPeriodSelector();
+      setupCustomersSearch();
+      setupCustomersSorting();
+      customersSetupDone = true;
+    }
+    // Load data with current period
     await loadCustomerStatsFiltered(customersPeriod);
     await loadTopCustomersFiltered(customersPeriod, customersSearchTerm);
   }
@@ -1202,40 +1224,30 @@ document.addEventListener('DOMContentLoaded', function() {
     const selector = document.getElementById('customersPeriodSelector');
     if (!selector) return;
 
-    const periodBtns = selector.querySelectorAll('.period-btn[data-period]');
-    console.log('Setting up', periodBtns.length, 'customer period buttons');
+    console.log('[Customers] Setting up period selector');
 
-    periodBtns.forEach(btn => {
-      // Remove existing listeners by cloning
-      const newBtn = btn.cloneNode(true);
-      btn.parentNode.replaceChild(newBtn, btn);
-
-      newBtn.addEventListener('click', function(e) {
+    // Use event delegation instead of cloning
+    selector.onclick = function(e) {
+      const btn = e.target.closest('.period-btn[data-period]');
+      if (btn) {
         e.preventDefault();
-        e.stopPropagation();
+        const period = btn.dataset.period;
+        console.log('[Customers] Period clicked:', period);
 
-        const period = this.dataset.period;
-        console.log('Customer period clicked:', period);
+        // Update active state
+        selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
 
-        // Update active state immediately
-        selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-
-        // Update global state
+        // Update global state and reload data
         customersPeriod = period;
-
-        // Reload BOTH stats and table with new period
         loadCustomerStatsFiltered(period);
         loadTopCustomersFiltered(period, customersSearchTerm);
-      });
-    });
+      }
+    };
 
     const customBtn = document.getElementById('customersCustomDateBtn');
     if (customBtn) {
-      const newCustomBtn = customBtn.cloneNode(true);
-      customBtn.parentNode.replaceChild(newCustomBtn, customBtn);
-
-      newCustomBtn.addEventListener('click', function(e) {
+      customBtn.onclick = function(e) {
         e.preventDefault();
         const startDate = document.getElementById('customersStartDate').value;
         const endDate = document.getElementById('customersEndDate').value;
@@ -1245,7 +1257,7 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
           alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      });
+      };
     }
   }
 
@@ -1315,11 +1327,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
   let productsPeriod = 'month';
   let productsSearchTerm = '';
+  let productsSetupDone = false;
 
   async function loadTopProducts() {
+    console.log('[Products] Loading products page');
     await loadTopProductsFiltered();
-    setupProductsPeriodSelector();
-    setupProductsSearch();
+    if (!productsSetupDone) {
+      setupProductsPeriodSelector();
+      setupProductsSearch();
+      productsSetupDone = true;
+    }
     loadLowStockProducts();
   }
 
@@ -1421,33 +1438,28 @@ document.addEventListener('DOMContentLoaded', function() {
     const selector = document.getElementById('productsPeriodSelector');
     if (!selector) return;
 
-    const periodBtns = selector.querySelectorAll('.period-btn[data-period]');
-    console.log('Setting up', periodBtns.length, 'product period buttons');
+    console.log('[Products] Setting up period selector');
 
-    periodBtns.forEach(btn => {
-      // Use direct event listener
-      btn.onclick = null;
-
-      btn.addEventListener('click', function(e) {
+    // Use event delegation
+    selector.onclick = function(e) {
+      const btn = e.target.closest('.period-btn[data-period]');
+      if (btn) {
         e.preventDefault();
-        e.stopPropagation();
+        const period = btn.dataset.period;
+        console.log('[Products] Period clicked:', period);
 
-        const period = this.dataset.period;
-        console.log('Product period clicked:', period);
-
-        // Update active state immediately
-        selector.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
+        // Update active state
+        selector.querySelectorAll('.period-btn[data-period]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
 
         productsPeriod = period;
         loadTopProductsFiltered(productsPeriod, productsSearchTerm);
-      });
-    });
+      }
+    };
 
     const customBtn = document.getElementById('productsCustomDateBtn');
     if (customBtn) {
-      customBtn.onclick = null;
-      customBtn.addEventListener('click', function(e) {
+      customBtn.onclick = function(e) {
         e.preventDefault();
         const startDate = document.getElementById('productsStartDate').value;
         const endDate = document.getElementById('productsEndDate').value;
@@ -1457,7 +1469,7 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
           alert('נא לבחור תאריך התחלה ותאריך סיום');
         }
-      });
+      };
     }
   }
 
