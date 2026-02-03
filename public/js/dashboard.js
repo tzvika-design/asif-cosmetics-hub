@@ -1125,70 +1125,120 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function checkClaudeStatus() {
     const statusCard = document.getElementById('statusClaude');
-    if (!statusCard) return;
-    const badge = statusCard.querySelector('.status-badge');
+    const settingsStatus = document.getElementById('settingsClaudeStatus');
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`);
       const data = await response.json();
 
-      if (data.status === 'ready') {
-        badge.textContent = '✓ מחובר';
-        badge.className = 'status-badge connected';
-      } else {
-        badge.textContent = 'לא מחובר';
-        badge.className = 'status-badge disconnected';
+      const isConnected = data.status === 'ready';
+      const statusText = isConnected ? '✓ מחובר' : 'לא מחובר';
+      const statusClass = isConnected ? 'connected' : 'disconnected';
+
+      // Update dashboard card
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = statusText;
+          badge.className = 'status-badge ' + statusClass;
+        }
       }
-    } catch {
-      badge.textContent = 'שגיאה';
-      badge.className = 'status-badge disconnected';
+
+      // Update settings page
+      if (settingsStatus) {
+        settingsStatus.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+      }
+    } catch (error) {
+      console.error('[Claude Status] Error:', error);
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = 'שגיאה';
+          badge.className = 'status-badge disconnected';
+        }
+      }
     }
   }
 
   async function checkShopifyStatus() {
     const statusCard = document.getElementById('statusShopify');
-    if (!statusCard) return;
-    const badge = statusCard.querySelector('.status-badge');
+    const settingsStatus = document.getElementById('settingsShopifyStatus');
 
     try {
       const response = await fetch(`${API_BASE}/api/shopify/test`);
       const data = await response.json();
 
-      if (data.success) {
-        badge.textContent = '✓ מחובר';
-        badge.className = 'status-badge connected';
-      } else {
-        badge.textContent = 'לא מחובר';
-        badge.className = 'status-badge disconnected';
+      const isConnected = data.success;
+      const statusText = isConnected ? '✓ מחובר' : (data.configured ? 'שגיאת חיבור' : 'לא מוגדר');
+      const statusClass = isConnected ? 'connected' : 'disconnected';
+
+      // Update dashboard card
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = statusText;
+          badge.className = 'status-badge ' + statusClass;
+        }
       }
-    } catch {
-      badge.textContent = 'שגיאה';
-      badge.className = 'status-badge disconnected';
+
+      // Update settings page
+      if (settingsStatus) {
+        settingsStatus.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+      }
+    } catch (error) {
+      console.error('[Shopify Status] Error:', error);
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = 'שגיאה';
+          badge.className = 'status-badge disconnected';
+        }
+      }
     }
   }
 
   async function checkMetaStatus() {
     const statusCard = document.getElementById('statusMeta');
-    if (!statusCard) return;
-    const badge = statusCard.querySelector('.status-badge');
+    const settingsStatus = document.getElementById('settingsMetaStatus');
 
     try {
       const response = await fetch(`${API_BASE}/api/meta/status`);
       const data = await response.json();
 
+      let statusText, statusClass;
       if (data.connected) {
-        badge.textContent = '✓ מחובר';
-        badge.className = 'status-badge connected';
+        statusText = '✓ מחובר';
+        statusClass = 'connected';
       } else if (data.configured) {
-        badge.textContent = 'טוקן לא תקין';
-        badge.className = 'status-badge disconnected';
+        statusText = 'טוקן לא תקין';
+        statusClass = 'disconnected';
       } else {
-        badge.textContent = 'לא מוגדר';
-        badge.className = 'status-badge pending';
+        statusText = 'לא מוגדר';
+        statusClass = 'pending';
       }
-    } catch {
-      badge.textContent = 'שגיאה';
-      badge.className = 'status-badge disconnected';
+
+      // Update dashboard card
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = statusText;
+          badge.className = 'status-badge ' + statusClass;
+        }
+      }
+
+      // Update settings page
+      if (settingsStatus) {
+        settingsStatus.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+      }
+    } catch (error) {
+      console.error('[Meta Status] Error:', error);
+      if (statusCard) {
+        const badge = statusCard.querySelector('.status-badge');
+        if (badge) {
+          badge.textContent = 'שגיאה';
+          badge.className = 'status-badge disconnected';
+        }
+      }
     }
   }
 
@@ -1448,15 +1498,22 @@ document.addEventListener('DOMContentLoaded', function() {
   // INITIALIZATION
   // ==========================================
 
+  console.log('[Dashboard] Initializing...');
+
+  // Initial load
   checkAllStatuses();
   loadQuickStats();
   renderRecentPosts('recentPostsList');
 
   // Auto-refresh every 30 seconds
   setInterval(() => {
+    console.log('[Dashboard] Auto-refreshing data...');
     checkAllStatuses();
     loadQuickStats();
   }, 30000);
 
-  console.log('[Dashboard] Initialized - visit /api/shopify/debug for diagnostics');
+  // Log when page is fully loaded
+  console.log('[Dashboard] Initialized successfully');
+  console.log('[Dashboard] Auto-refresh: every 30 seconds');
+  console.log('[Dashboard] Debug: visit /api/shopify/debug for diagnostics');
 });

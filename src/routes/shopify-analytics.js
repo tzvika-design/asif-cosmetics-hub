@@ -77,6 +77,65 @@ function getDateRange(startDate, endDate, period) {
 // ==========================================
 
 /**
+ * GET /api/shopify/test
+ * Quick connection test for dashboard status cards
+ */
+router.get('/test', async (req, res) => {
+  try {
+    const hasToken = !!process.env.SHOPIFY_ACCESS_TOKEN;
+    const hasUrl = !!process.env.SHOPIFY_STORE_URL;
+
+    if (!hasToken || !hasUrl) {
+      return res.json({
+        success: false,
+        message: 'Shopify not configured',
+        configured: false
+      });
+    }
+
+    // Quick API test - just get shop info
+    const axios = require('axios');
+    const response = await axios.get(
+      `https://${process.env.SHOPIFY_STORE_URL}/admin/api/2024-01/shop.json`,
+      {
+        headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN },
+        timeout: 5000
+      }
+    );
+
+    res.json({
+      success: true,
+      shop: response.data.shop?.name || 'Connected',
+      configured: true
+    });
+  } catch (error) {
+    res.json({
+      success: false,
+      message: error.message,
+      configured: true
+    });
+  }
+});
+
+/**
+ * GET /api/shopify/status
+ * Detailed status for settings page
+ */
+router.get('/status', async (req, res) => {
+  const hasToken = !!process.env.SHOPIFY_ACCESS_TOKEN;
+  const hasUrl = !!process.env.SHOPIFY_STORE_URL;
+  const preloaderStatus = statsPreloader.getStatus();
+
+  res.json({
+    configured: hasToken && hasUrl,
+    hasToken,
+    hasUrl,
+    preloader: preloaderStatus,
+    storeUrl: process.env.SHOPIFY_STORE_URL || null
+  });
+});
+
+/**
  * GET /api/shopify/analytics/summary
  * Main analytics summary - uses preloaded data when possible
  */
